@@ -19,3 +19,4 @@ jobs:
           git fetch --no-tags https://github.com/schlagmichdoch/PairDrop.git 4862ba3067be1a0f2e0d1e94861dc9200b5bfeea
           git merge --allow-unrelated-histories --no-edit -m "Import PairDrop v1.11.2 (4862ba3) with upstream history" FETCH_HEAD
           git push origin HEAD:main
+# Upstream workflow files are registered separately through the GitHub connector.
