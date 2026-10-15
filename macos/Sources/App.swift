@@ -218,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             switch result {
             case .failure(let error):
                 self.release(command)
-                self.fail(error.localizedDescription)
+                self.fail(Self.scriptError(error, operation: "Подготовка отправки"))
             case .success(let raw):
                 self.chooseAndSend(command, choices: raw as? [[String: Any]] ?? [])
             }
@@ -256,7 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         command.removeValue(forKey: "created"); command["to"] = to
         active[id] = (command["files"] as? [[String: Any]] ?? []).compactMap { $0["token"] as? String }
         webView.callAsyncJavaScript("return await window.PairDropBridge.send(command);", arguments: ["command": command], in: nil, in: .page) { [weak self] result in
-            if case .failure(let error) = result { self?.complete(id, error: error.localizedDescription) }
+            if case .failure(let error) = result { self?.complete(id, error: Self.scriptError(error, operation: "Отправка")) }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
             guard let self = self, self.active[id] != nil else { return }
@@ -332,6 +332,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 let url = try receiveStore.finish(id: id)
                 notify(title: "Файл сохранён", body: url.lastPathComponent, payload: ["file": url.path])
                 replyHandler(["id": id], nil); return
+            case "selfTestSend":
+                guard selfTest, let stableId = data["preferred"] as? String else {
+                    replyHandler(nil, "Only available during self-test"); return
+                }
+                UserDefaults.standard.set(stableId, forKey: "preferred-peer")
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent("pairdrop-ci-context.bin")
+                try Data((0..<1100123).map { UInt8($0 % 251) }).write(to: url)
+                let pasteboard = NSPasteboard.withUniqueName()
+                pasteboard.writeObjects([url as NSURL])
+                DispatchQueue.main.async {
+                    var error: NSString?
+                    self.sendSelection(pasteboard, userData: nil, error: &error)
+                    pasteboard.releaseGlobally()
+                    if let error = error { self.finishSelfTest(false, error as String) }
+                }
             default: replyHandler(nil, "Unknown message"); return
             }
             replyHandler(true, nil)
@@ -442,6 +457,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if selfTest { finishSelfTest(false, message); return }
         let alert = NSAlert(); alert.messageText = "PairDrop"; alert.informativeText = message; alert.runModal()
     }
+    private static func scriptError(_ error: Error, operation: String) -> String {
+        let native = error as NSError
+        let detail = native.userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
+        let source = native.userInfo["WKJavaScriptExceptionSourceURL"] as? String ?? ""
+        let line = native.userInfo["WKJavaScriptExceptionLineNumber"] ?? "?"
+        return "\(operation): \(detail)\(source.isEmpty ? "" : " (\(source):\(line))")"
+    }
     private func runSelfTest() {
         window.orderOut(nil)
         window.contentView = NSView() // Exercise WKPreferences when detached, not just momentarily hidden.
@@ -457,12 +479,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 let bytes = try? Data(contentsOf: path)
                 let service = self.responds(to: NSSelectorFromString("sendSelection:userData:error:"))
                 let success = values["secure"] == true && values["rtc"] == true && values["bridge"] == true
-                    && values["disk"] == true && bytes == Data((0..<1100123).map { UInt8($0 % 251) }) && service
+                    && values["disk"] == true && values["contextSend"] == true
+                    && bytes == Data((0..<1100123).map { UInt8($0 % 251) }) && service
                     && self.selfTestAcceptedIncoming && NSApp.activationPolicy() == .accessory
                     && self.webView.configuration.preferences.inactiveSchedulingPolicy == .none
                 try? FileManager.default.removeItem(at: path)
                 self.finishSelfTest(success, "detached background WebRTC, native request acceptance, 1.1 MB disk receive, no Dock: \(values), service=\(service), nativeAccept=\(self.selfTestAcceptedIncoming)")
-            case .failure(let error): self.finishSelfTest(false, error.localizedDescription)
+            case .failure(let error): self.finishSelfTest(false, Self.scriptError(error, operation: "Self-test"))
             }
         }
     }

@@ -57,6 +57,36 @@ await acknowledged;
 const result = {secure: window.isSecureContext, rtc: true, bridge: !!window.PairDropBridge,
     disk: complete.nativeSaved === true && complete.size === bytes.length,
     hidden: document.hidden, requestAccepted: !receiver._requestPending};
+// Exercise the actual Swift Services -> registered file -> prepare -> lazy HTTP range -> RTC path.
+const secret = 'ci-context-secret-'.padEnd(256, 'x');
+await PersistentStorage.addRoomSecret(secret, 'CI Android', 'Android');
+receiver._updateRoomIds('secret', secret);
+pairDrop.peersUI._joinPeer({id: 'ci-hidden-sender', name: {displayName: 'CI Android', deviceName: 'Android',
+    os: 'Android', browser: 'Chrome', type: 'mobile'}}, 'secret', secret);
+pairDrop.peersUI._onPeerConnected('ci-hidden-sender', '0123456789abcdef');
+sender._autoAccept = true;
+const stableId = (await window.PairDropBridge.snapshot()).find(peer => peer.id === 'ci-hidden-sender').stableId;
+const contextReceived = new Promise(resolve => {
+    const handler = event => {
+        if (event.detail.peerId !== 'ci-hidden-receiver') return;
+        Events.off('files-received', handler);
+        resolve(event.detail.files[0]);
+    };
+    Events.on('files-received', handler);
+});
+const contextAcknowledged = new Promise(resolve => {
+    const handler = event => {
+        if (event.detail.peerId !== 'ci-hidden-sender') return;
+        Events.off('files-sent', handler);
+        resolve();
+    };
+    Events.on('files-sent', handler);
+});
+await window.PairDropHost.call('selfTestSend', {preferred: stableId});
+const contextFile = await contextReceived;
+await contextAcknowledged;
+result.contextSend = contextFile.nativeSaved === true && contextFile.size === bytes.length;
+await PersistentStorage.deleteRoomSecret(secret);
 left.close(); right.close();
 delete pairDrop.peers.peers['ci-hidden-sender'];
 return result;
