@@ -32,6 +32,8 @@ public final class ReceiverService extends Service {
     private JSONArray choices;
     private volatile boolean ready;
     private boolean chooserVisible,requestVisible,destroyed;
+    private AlertDialog chooserDialog,incomingDialog;
+    private String incomingDialogId;
     private int rendererRestarts;
     private ConnectivityManager.NetworkCallback networkCallback;
 
@@ -90,7 +92,7 @@ public final class ReceiverService extends Service {
                 for(JSONObject command:active.values()) error("Соединение перезапущено; повторите незавершённую отправку вручную");
                 active.clear();if(preparing!=null) { error("Подготовка отправки прервана");preparing=null;choices=null; }
                 if(++rendererRestarts<=3) main.postDelayed(()-> { if(!destroyed) { createWebView();MainActivity a=host();if(a!=null)a.showReceiver(web); } },1000L<<rendererRestarts);
-                else error("Приёмник остановлен после ошибок WebView. Откройте приложение заново.");
+                else { error("Приёмник остановлен после ошибок WebView. Откройте приложение заново.");MainActivity a=host();if(a!=null)a.finish();stopSelf(); }
                 return true;
             }
         });
@@ -144,7 +146,7 @@ public final class ReceiverService extends Service {
                 if(BuildConfig.DEBUG && debugEvents!=null && data.optString("peerId").equals("ci-remote")) respond(id,true);
                 else { notifyRequest(id,data);showIncoming(); }break;
             }
-            case "requestExpired": { String id=data.optString("id");requests.remove(id);notifications.cancel("request-"+id,7);break; }
+            case "requestExpired": { String id=data.optString("id");requests.remove(id);notifications.cancel("request-"+id,7);if(id.equals(incomingDialogId)&&incomingDialog!=null)incomingDialog.dismiss();break; }
             case "peerLeft": {
                 String peer=data.optString("peerId");disk.execute(()->store.cancel(peer));break;
             }
@@ -158,12 +160,19 @@ public final class ReceiverService extends Service {
     void copy(String text) { ((ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("PairDrop",text)); }
     public void enqueueText(String text) {
         if(text==null || text.isEmpty())return;
-        try { pending.add(new JSONObject().put("id",UUID.randomUUID().toString()).put("text",text));drain(); }
+        try { String id=UUID.randomUUID().toString();pending.add(new JSONObject().put("id",id).put("text",text));main.postDelayed(()->expireCommand(id),30000);drain(); }
         catch(JSONException error) { error(error.getMessage()); }
+    }
+    private void expireCommand(String id) {
+        boolean removed=pending.removeIf(command->id.equals(command.optString("id")));
+        if(preparing!=null && id.equals(preparing.optString("id"))) {
+            preparing=null;choices=null;removed=true;if(chooserDialog!=null)chooserDialog.dismiss();
+        }
+        if(removed) { error("Отправка текста отменена: получатель не выбран или недоступен. Отправьте выделение ещё раз.");drain(); }
     }
     public boolean hasPreferred() { return prefs.contains("preferred"); }
     private void drain() {
-        if(!ready || preparing!=null || pending.isEmpty())return;
+        if(destroyed || !ready || preparing!=null || pending.isEmpty())return;
         preparing=pending.removeFirst();choices=null;
         try { JSONObject options=new JSONObject().put("preferred",prefs.contains("preferred")?prefs.getString("preferred",null):JSONObject.NULL);
             invoke("prepareNativeSend",options,"prepared",preparing.getString("id"));
@@ -182,8 +191,9 @@ public final class ReceiverService extends Service {
     private MainActivity host() { MainActivity a=activity.get();return a!=null && a.visible && !a.isFinishing() && !a.isDestroyed()?a:null; }
     void attach(MainActivity a) { activity=new WeakReference<>(a);a.showReceiver(web);showChooser();showIncoming(); }
     void detach(MainActivity a) {
-        if(activity.get()==a) { activity.clear();if(web.getParent() instanceof android.view.ViewGroup)((android.view.ViewGroup)web.getParent()).removeView(web); }
+        if(activity.get()==a) { activity.clear();hideDialogs();if(web.getParent() instanceof android.view.ViewGroup)((android.view.ViewGroup)web.getParent()).removeView(web); }
     }
+    void hideDialogs() { if(chooserDialog!=null)chooserDialog.dismiss();if(incomingDialog!=null)incomingDialog.dismiss(); }
     void showChooser() {
         if(choices==null || preparing==null || chooserVisible)return;
         MainActivity a=host();if(a==null) { notification("Выберите получателя","Откройте PairDrop для подтверждения устройства",null);return; }
@@ -191,7 +201,7 @@ public final class ReceiverService extends Service {
             String[] labels=new String[choices.length()];JSONArray inventory=choices;String commandId=preparing.getString("id");
             for(int i=0;i<labels.length;i++) { JSONObject peer=inventory.getJSONObject(i);labels[i]=peer.optString("name")+" — "+peer.optString("deviceName")+(peer.optBoolean("paired")?" • сопряжено":""); }
             chooserVisible=true;
-            new AlertDialog.Builder(a).setTitle("Отправить текст устройству")
+            chooserDialog=new AlertDialog.Builder(a).setTitle("Отправить текст устройству")
                 .setItems(labels,(dialog,index)-> { try {
                     if(preparing==null || !commandId.equals(preparing.optString("id")))return;
                     JSONObject peer=inventory.getJSONObject(index);
@@ -200,15 +210,18 @@ public final class ReceiverService extends Service {
                 }catch(Exception e){error(e.getMessage());} })
                 .setNegativeButton("Отмена",(dialog,which)-> { preparing=null;choices=null; })
                 .setOnCancelListener(dialog->{preparing=null;choices=null;})
-                .setOnDismissListener(dialog->{chooserVisible=false;drain();}).show();
+                .setOnDismissListener(dialog->{chooserDialog=null;chooserVisible=false;drain();}).create();
+            chooserDialog.show();
         }catch(Exception e){error(e.getMessage());}
     }
     private void showIncoming() {
         MainActivity a=host();if(a==null || requestVisible || requests.isEmpty())return;
-        String id=requests.keySet().iterator().next();JSONObject request=requests.get(id);requestVisible=true;
-        new AlertDialog.Builder(a).setTitle("Принять файлы?").setMessage(request.optJSONArray("names").toString())
+        String id=requests.keySet().iterator().next();JSONObject request=requests.get(id);requestVisible=true;incomingDialogId=id;
+        incomingDialog=new AlertDialog.Builder(a).setTitle("Принять файлы?").setMessage(String.valueOf(request.optJSONArray("names")))
             .setPositiveButton("Принять",(d,w)->respond(id,true)).setNegativeButton("Отклонить",(d,w)->respond(id,false))
-            .setOnDismissListener(d->{requestVisible=false;}).show();
+            .setOnCancelListener(d->respond(id,false))
+            .setOnDismissListener(d->{incomingDialog=null;incomingDialogId=null;requestVisible=false;if(!requests.containsKey(id))showIncoming();}).create();
+        incomingDialog.show();
     }
     private void respond(String id,boolean accepted) {
         if(!requests.containsKey(id) || !ready)return;
@@ -222,7 +235,7 @@ public final class ReceiverService extends Service {
         }
         try { notifications.notify("request-"+id,7,builder.build()); }catch(SecurityException ignored){}
     }
-    private Notification.Builder base(String title,String body) { return new Notification.Builder(this,"events").setSmallIcon(R.drawable.app_icon).setContentTitle(title).setContentText(body).setContentIntent(open()).setAutoCancel(true); }
+    private Notification.Builder base(String title,String body) { return new Notification.Builder(this,"events").setSmallIcon(R.drawable.app_icon).setContentTitle(title).setContentText(body.length()>1000?body.substring(0,1000)+"…":body).setContentIntent(open()).setAutoCancel(true); }
     private void notification(String title,String body,String unused) { try { notifications.notify(UUID.randomUUID().toString(),8,base(title,body).build()); }catch(SecurityException ignored){} }
     private void notifyText(String title,String text,boolean copied) {
         Notification.Builder builder=base(title,text);
@@ -236,7 +249,7 @@ public final class ReceiverService extends Service {
     @Override public IBinder onBind(Intent intent) { return binder; }
     @Override public int onStartCommand(Intent intent,int flags,int id) {
         if(intent!=null) {
-            if("stop".equals(intent.getAction()))stopSelf();
+            if("stop".equals(intent.getAction())) { MainActivity a=host();if(a!=null)a.finish();stopSelf(); }
             if("accept".equals(intent.getAction()))respond(intent.getStringExtra("request"),true);
             if("decline".equals(intent.getAction()))respond(intent.getStringExtra("request"),false);
             if("copy".equals(intent.getAction()))copy(intent.getStringExtra("text"));
@@ -247,8 +260,9 @@ public final class ReceiverService extends Service {
     public void setPreferredForTest(String value) { if(!BuildConfig.DEBUG)throw new SecurityException("Test only");prefs.edit().putString("preferred",value).apply(); }
     @Override public void onDestroy() {
         destroyed=true;ready=false;
+        main.removeCallbacksAndMessages(null);hideDialogs();
         if(networkCallback!=null)getSystemService(ConnectivityManager.class).unregisterNetworkCallback(networkCallback);
         if(web!=null) { if(web.getParent() instanceof android.view.ViewGroup)((android.view.ViewGroup)web.getParent()).removeView(web);web.destroy(); }
-        disk.execute(()->store.cancel(null));disk.shutdown();notifications.cancelAll();if(BuildConfig.DEBUG)debugInstance=null;super.onDestroy();
+        disk.execute(()->store.cancel(null));disk.shutdown();notifications.cancel(1);for(String id:requests.keySet())notifications.cancel("request-"+id,7);if(BuildConfig.DEBUG)debugInstance=null;super.onDestroy();
     }
 }

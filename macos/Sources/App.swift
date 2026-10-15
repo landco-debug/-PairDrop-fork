@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             }
         } catch { fail(error.localizedDescription) }
         if selfTest {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 90) { self.finishSelfTest(false, "Frontend initialization timed out") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 90) { self.finishSelfTest(false, "Integration timed out: ready=\(self.ready), sent=\(self.selfTestSentCount), pending=\(self.pending.count), preparing=\(self.preparingSend), active=\(self.active.count)") }
         }
     }
 
@@ -188,6 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     // Registered by NSServices. No clipboard polling or Accessibility permission is needed.
     @objc func sendSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        if selfTest { print("Registered Service received pasteboard: \(pasteboard.types ?? [])"); fflush(stdout) }
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
             enqueueFiles(urls)
         } else if let text = pasteboard.string(forType: .string)

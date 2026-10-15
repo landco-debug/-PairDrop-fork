@@ -1,3 +1,56 @@
+# v4: двусторонний текстовый буфер — реализация и проверка
+
+Целевые системы: macOS Sequoia 15 на Apple Silicon; Android 17 / One UI 9.0.
+
+Реализованы отдельная текстовая Служба macOS и Android ACTION_PROCESS_TEXT /
+ACTION_SEND, отправка явного выделения, автокопирование входящего текста только
+от сопряжённых устройств (по умолчанию включено, можно отключить).
+Общие изменения буфера не читаются и не пересылаются. Файлы и картинки остаются
+файловыми передачами, а не универсальной вставкой во все приложения.
+
+Android-клиент находится в android/, идентификатор site.landco.pairdrop.fork.
+Это новый APK со встроенным исправленным фронтендом и foreground-приёмником,
+которому принадлежит WebView. Он не выгружает страницу при Activity.onStop().
+Постоянного wake lock и опроса буфера нет; уведомление даёт остановить приёмник.
+Фоновый расход не измерен. Цели 0,1% одного ядра / 80 MiB PSS / 1 п.п. батареи
+в сутки не являются результатами этой реализации; WebView нужно измерять отдельно.
+
+Android 17 требует ACCESS_LOCAL_NETWORK в манифесте и runtime-запросе. Используются
+SDK Platform 37.0 (именно platforms;android-37.0), Build Tools 37.0.0, AGP 9.4.0,
+Gradle 9.6.0 и Java 17. Новое сопряжение обязательно: старое Android-приложение
+не обновляется новым Mac-клиентом. Старый клиент следует закрыть.
+
+В меню Android есть осознанный переход к системному исключению из оптимизации
+батареи для приёма с выключенным экраном. Samsung также может применять список
+спящих приложений. Эти настройки не являются доказательством надёжного сна на A57.
+Незадействованные команды выделения истекают через 30 секунд с уведомлением,
+чтобы не отправлять приватный текст неожиданно спустя длительное время.
+
+В macOS исправлена регистрация Службы: NSRequiredContext={} и legacy строковый
+тип NSStringPboardType. Текстовая и файловая службы имеют отдельные меню.
+NSPerformService проверяется в приложении, запущенном через Launch Services.
+Также защищён поздний peer-display-name-changed для уже удалённого устройства.
+
+Текущие результаты: 22 регрессионных теста Node проходят. Android APK компилируется
+для API 37.0; полная проверка эмулятора и macOS ещё выполняется. Наличие исходников
+и сборки не является подтверждением системного буфера до успешного теста.
+Результаты финального CI, подпись и контрольные суммы будут записаны после проверки.
+
+Проверенные первичные источники (15.10.2026):
+- https://developer.android.com/about/versions/17/behavior-changes-17
+- https://developer.android.com/privacy-and-security/local-network-permission
+- https://developer.android.com/about/versions/17/setup-sdk
+- https://developer.android.com/build/releases/agp-9-4-0-release-notes
+- https://developer.android.com/training/monitoring-device-state/doze-standby
+- https://developer.samsung.com/mobile/app-management.html
+- https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT
+- https://github.com/aosp-mirror/platform_frameworks_base/blob/main/services/core/java/com/android/server/clipboard/ClipboardService.java
+- https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/SysServices/Articles/properties.html
+
+Ниже — история v3/v2/v1, не результаты финальной v4.
+
+---
+
 # Изменения v3 — 15 октября 2026
 
 ## Подтверждение пользователя, 14:52 (Asia/Tbilisi)

@@ -42,16 +42,28 @@ public final class MainActivity extends Activity {
             popup.getMenu().add(0,1,0,"Копировать входящий текст").setCheckable(true).setChecked(auto);
             popup.getMenu().add(0,2,1,"Сбросить получателя");
             popup.getMenu().add(0,3,2,"Остановить фоновый приём");
+            popup.getMenu().add(0,4,3,"Приём при выключенном экране…");
             popup.setOnMenuItemClickListener(item -> {
                 if (item.getItemId()==1) getSharedPreferences("receiver",0).edit().putBoolean("autoCopy",!auto).apply();
                 if (item.getItemId()==2) getSharedPreferences("receiver",0).edit().remove("preferred").apply();
                 if (item.getItemId()==3) { stopService(new Intent(this,ReceiverService.class)); finish(); }
+                if (item.getItemId()==4) configureScreenOff();
                 return true;
             }); popup.show();
         });
         layout.addView(bar); content = new FrameLayout(this);
         layout.addView(content,new LinearLayout.LayoutParams(-1,0,1)); setContentView(layout);
         requestAccess();
+    }
+    private void configureScreenOff() {
+        PowerManager power=getSystemService(PowerManager.class);
+        boolean exempt=power.isIgnoringBatteryOptimizations(getPackageName());
+        new AlertDialog.Builder(this).setTitle("Приём при выключенном экране")
+            .setMessage(exempt?"Системное исключение уже включено. На Samsung также проверьте, что PairDrop Fork отсутствует в списке спящих приложений. Длительный приём расходует батарею.":"Android может отключать сеть в глубоком сне. Чтобы принимать текст без открытого окна, разрешите PairDrop работать без оптимизации батареи. Это увеличивает фоновый расход; его величину нужно измерить на телефоне.")
+            .setPositiveButton(exempt?"Настройки приложения":"Разрешить",(d,w)-> {
+                Intent settings=new Intent(exempt?android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS:android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,Uri.parse("package:"+getPackageName()));
+                try { startActivity(settings); } catch(ActivityNotFoundException error) { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:"+getPackageName()))); }
+            }).setNegativeButton("Закрыть",null).show();
     }
     private void requestAccess() {
         ArrayList<String> missing = new ArrayList<>();
@@ -77,7 +89,7 @@ public final class MainActivity extends Activity {
         startForegroundService(intent); bound = bindService(intent,connection,BIND_AUTO_CREATE);
     }
     @Override protected void onStart() { super.onStart();visible=true;if(service!=null)service.attach(this); }
-    @Override protected void onStop() { visible=false;super.onStop(); }
+    @Override protected void onStop() { visible=false;if(service!=null)service.hideDialogs();super.onStop(); }
     void showReceiver(android.webkit.WebView view) {
         if (view.getParent() instanceof ViewGroup) ((ViewGroup)view.getParent()).removeView(view);
         content.removeAllViews(); content.addView(view,new FrameLayout.LayoutParams(-1,-1));
