@@ -69,7 +69,7 @@ function harness() {
     for (const name of ['link-utils', 'network', 'ui']) {
         vm.runInContext(readFileSync(new URL(`../public/scripts/${name}.js`, import.meta.url), 'utf8'), context);
     }
-    const classes = vm.runInContext('({ServerConnection, Peer, PeersManager, FileDigester, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
+    const classes = vm.runInContext('({ServerConnection, Peer, PeersManager, FileDigester, PairDeviceDialog, PublicRoomDialog, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
     async function tick(delta) {
         const target = time + delta;
         for (;;) {
@@ -256,4 +256,15 @@ test('offline signaling does not reconnect forever, and returning to the window 
     h.context.document.hidden = false;
     server._onVisibilityChange();
     assert.equal(attempts, 9);
+});
+
+test('native pairing and room QR URLs use the shared public server rather than Mac loopback', () => {
+    const h = harness();
+    h.context.window.PairDropHost = {};
+    h.context.location = {href: 'http://127.0.0.1:49731/'};
+    assert.equal(h.PairDeviceDialog.prototype._getPairUrl.call({pairKey: '123456'}), 'https://pairdrop.net/?pair_key=123456');
+    assert.equal(h.PublicRoomDialog.prototype._getShareRoomUrl.call({roomId: 'abcde'}), 'https://pairdrop.net/?room_id=abcde');
+    delete h.context.window.PairDropHost;
+    h.context.location = {href: 'https://selfhost.example/'};
+    assert.equal(h.PairDeviceDialog.prototype._getPairUrl.call({pairKey: '123456'}), 'https://selfhost.example/?pair_key=123456');
 });

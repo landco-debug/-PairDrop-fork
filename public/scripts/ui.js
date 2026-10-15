@@ -1433,7 +1433,7 @@ class PairDeviceDialog extends Dialog {
     }
 
     _getPairUrl() {
-        let url = new URL(location.href);
+        let url = new URL(window.PairDropHost ? 'https://pairdrop.net/' : location.href);
         url.searchParams.append('pair_key', this.pairKey)
         return url.href;
     }
@@ -1830,7 +1830,7 @@ class PublicRoomDialog extends Dialog {
     }
 
     _getShareRoomUrl() {
-        let url = new URL(location.href);
+        let url = new URL(window.PairDropHost ? 'https://pairdrop.net/' : location.href);
         url.searchParams.append('room_id', this.roomId)
         return url.href;
     }
