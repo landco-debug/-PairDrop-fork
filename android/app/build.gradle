@@ -16,7 +16,8 @@ android {
 }
 dependencies { implementation 'androidx.webkit:webkit:1.11.0' }
 tasks.register('bundleWeb', Sync) {
-    from '../../public'
-    into layout.buildDirectory.dir('generated/web-assets/web')
+    from('../../public') { into 'web' }
+    from('../../LICENSE') { rename { 'LICENSE.txt' } }
+    into layout.buildDirectory.dir('generated/web-assets')
 }
 tasks.named('preBuild').configure { dependsOn 'bundleWeb' }

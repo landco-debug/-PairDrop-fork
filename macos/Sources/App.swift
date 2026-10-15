@@ -80,6 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "pairdrop")
         let bridge = "window.PairDropHost = Object.freeze({call: (kind, data = {}) => window.webkit.messageHandlers.pairdrop.postMessage({kind, data})});"
         config.userContentController.addUserScript(WKUserScript(source: bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        if selfTest {
+            let diagnostic = "addEventListener('error',e=>PairDropHost.call('selfTestError',{message:e.message,source:e.filename,line:e.lineno}));addEventListener('unhandledrejection',e=>PairDropHost.call('selfTestError',{message:String(e.reason?.stack||e.reason)}));"
+            config.userContentController.addUserScript(WKUserScript(source: diagnostic, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 920, height: 700), configuration: config)
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -315,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             case "ready":
                 ready = true
                 if selfTest {
+                    print("Frontend ready; starting native fixture"); fflush(stdout)
                     runSelfTest()
                 } else { drain() }
             case "connection":
@@ -365,15 +370,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 replyHandler(["id": id], nil); return
             case "selfTestClipboard":
                 guard selfTest else { replyHandler(nil, "Test only"); return }
+                print("Clipboard check received"); fflush(stdout)
                 if let enabled = data["enabled"] as? Bool { UserDefaults.standard.set(enabled, forKey: "auto-copy-text") }
                 replyHandler(NSPasteboard.general.string(forType: .string) == data["expected"] as? String, nil); return
+            case "selfTestError":
+                guard selfTest else { replyHandler(nil, "Test only"); return }
+                finishSelfTest(false, "JavaScript event error: \(data)")
+            case "selfTestTrace":
+                guard selfTest else { replyHandler(nil, "Test only"); return }
+                print("Native fixture stage: \(data)"); fflush(stdout)
             case "selfTestSelection":
                 guard selfTest, let text = data["text"] as? String else { replyHandler(nil, "Test only"); return }
                 let pasteboard = NSPasteboard.withUniqueName()
                 pasteboard.declareTypes([NSPasteboard.PasteboardType("NSStringPboardType")], owner: nil)
                 pasteboard.setString(text, forType: NSPasteboard.PasteboardType("NSStringPboardType"))
                 DispatchQueue.main.async {
+                    print("Invoking registered text Service"); fflush(stdout)
                     let performed = NSPerformService("Отправить текст через PairDrop", pasteboard)
+                    print("Registered text Service result: \(performed)"); fflush(stdout)
                     pasteboard.releaseGlobally()
                     if !performed { self.finishSelfTest(false, "System text Service was not discoverable") }
                 }

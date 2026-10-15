@@ -1,3 +1,4 @@
+await window.PairDropHost.call('selfTestTrace', {stage: 'fixture-start'});
 // Real WebRTC data channels + production Peer/NativeBridge + native streamed disk writes.
 const left = new RTCPeerConnection({iceServers: []});
 const right = new RTCPeerConnection({iceServers: []});
@@ -53,6 +54,7 @@ const bytes = new Uint8Array(1100123);
 for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
 await sender.requestFileTransfer([new File([bytes], 'pairdrop-ci-v2.bin', {type: 'application/octet-stream'})], 'ci-file-once');
 const complete = await received;
+await window.PairDropHost.call('selfTestTrace', {stage: 'file-received'});
 await acknowledged;
 const result = {secure: window.isSecureContext, rtc: true, bridge: !!window.PairDropBridge,
     disk: complete.nativeSaved === true && complete.size === bytes.length,
@@ -64,6 +66,7 @@ const sendRemoteText = async (text, requestId) => {
     });
     sender.sendText(text, requestId); await ack;
 };
+await window.PairDropHost.call('selfTestTrace', {stage: 'unpaired-text-start'});
 await sendRemoteText('unpaired-must-not-replace', 'ci-unpaired-text');
 if (!await window.PairDropHost.call('selfTestClipboard', {expected: 'clipboard-ci-seed'})) throw new Error('Unpaired peer replaced clipboard');
 // Exercise the actual Swift Services -> registered file -> prepare -> lazy HTTP range -> RTC path.
