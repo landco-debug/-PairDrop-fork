@@ -1,4 +1,4 @@
-const cacheVersion = 'v1.11.2';
+const cacheVersion = 'pairdrop-fork-0.1.0';
 const cacheTitle = `pairdrop-cache-${cacheVersion}`;
 const relativePathsToCache = [
     './',
@@ -9,6 +9,8 @@ const relativePathsToCache = [
     'scripts/browser-tabs-connector.js',
     'scripts/localization.js',
     'scripts/main.js',
+    'scripts/link-utils.js',
+    'scripts/native-bridge.js',
     'scripts/network.js',
     'scripts/persistent-storage.js',
     'scripts/ui.js',

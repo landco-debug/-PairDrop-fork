@@ -899,11 +899,20 @@ class ReceiveFileDialog extends ReceiveDialog {
     }
 
     async _onFilesReceived(peerId, files, imagesOnly, totalSize) {
-        const displayName = $(peerId).ui._displayName();
-        const connectionHash = $(peerId).ui._connectionHash;
-        const badgeClassName = $(peerId).ui._badgeClassName();
+        if (files.every(file => file.nativeSaved)) {
+            Events.fire('set-progress', {peerId, progress: 1, status: 'process'});
+            Events.fire('files-saved', {peerId, files});
+            return;
+        }
+        const peerUI = $(peerId)?.ui;
+        const displayName = peerUI?._displayName() || 'PairDrop';
+        const connectionHash = peerUI?._connectionHash || '';
+        const badgeClassName = peerUI?._badgeClassName() || 'badge-room-ip';
 
         this._filesQueue.push({
+            saved: false,
+            cancelled: false,
+            urls: new Set(),
             peerId: peerId,
             displayName: displayName,
             connectionHash: connectionHash,
@@ -921,11 +930,18 @@ class ReceiveFileDialog extends ReceiveDialog {
     async _nextFiles() {
         if (this._busy || !this._filesQueue.length) return;
         this._busy = true;
-        const {peerId, displayName, connectionHash, files, imagesOnly, totalSize, badgeClassName} = this._filesQueue.shift();
-        await this._displayFiles(peerId, displayName, connectionHash, files, imagesOnly, totalSize, badgeClassName);
+        const batch = this._filesQueue.shift();
+        this._activeBatch = batch;
+        try {
+            await this._displayFiles(batch);
+        } catch (error) {
+            console.error(error);
+            Events.fire('notify-user', String(error));
+            this.hide();
+        }
     }
 
-    createPreviewElement(file) {
+    createPreviewElement(file, batch) {
         return new Promise((resolve, reject) => {
             try {
                 let mime = file.type.split('/')[0]
@@ -941,18 +957,19 @@ class ReceiveFileDialog extends ReceiveDialog {
                 else {
                     let element = document.createElement(previewElement[mime]);
                     element.controls = true;
-                    element.onload = _ => {
-                        this.$previewBox.appendChild(element);
+                    const loaded = () => {
+                        if (!batch.cancelled && this._activeBatch === batch) {
+                            this.$previewBox.appendChild(element);
+                        }
                         resolve(true);
                     };
-                    element.onloadeddata = _ => {
-                        this.$previewBox.appendChild(element);
-                        resolve(true);
-                    };
+                    element.onload = loaded;
+                    element.onloadeddata = loaded;
                     element.onerror = _ => {
                         reject(`${mime} preview could not be loaded from type ${file.type}`);
                     };
                     element.src = URL.createObjectURL(file);
+                    batch.urls.add(element.src);
                 }
             } catch (e) {
                 reject(`preview could not be loaded from type ${file.type}`);
@@ -960,7 +977,8 @@ class ReceiveFileDialog extends ReceiveDialog {
         });
     }
 
-    async _displayFiles(peerId, displayName, connectionHash, files, imagesOnly, totalSize, badgeClassName) {
+    async _displayFiles(batch) {
+        const {peerId, displayName, connectionHash, files, imagesOnly, totalSize, badgeClassName} = batch;
         this._parseFileData(displayName, connectionHash, files, imagesOnly, totalSize, badgeClassName);
 
         let descriptor, url, filenameDownload;
@@ -976,15 +994,23 @@ class ReceiveFileDialog extends ReceiveDialog {
         }
         this.$receiveTitle.innerText = Localization.getTranslation("dialogs.receive-title", null, {descriptor: descriptor});
 
-        const canShare = (window.iOS || window.android) && !!navigator.share && navigator.canShare({files});
+        const canShare = (window.iOS || window.android) && !!navigator.share
+            && typeof navigator.canShare === 'function' && navigator.canShare({files});
         if (canShare) {
             this.$shareBtn.removeAttribute('hidden');
-            this.$shareBtn.onclick = _ => {
-                navigator.share({files: files})
-                    .catch(err => {
-                        console.error(err);
-                    });
-            }
+            this.$shareBtn.onclick = async () => {
+                if (batch.saved || batch.cancelled || batch.sharing) return;
+                batch.sharing = true;
+                try {
+                    await navigator.share({files});
+                    batch.saved = true;
+                    this.hide();
+                } catch (error) {
+                    console.error(error);
+                } finally {
+                    batch.sharing = false;
+                }
+            };
         }
 
         let downloadZipped = false;
@@ -1006,6 +1032,11 @@ class ReceiveFileDialog extends ReceiveDialog {
                     bytesCompleted += files[i].size;
                 }
                 url = await zipper.getBlobURL();
+                if (batch.cancelled) {
+                    URL.revokeObjectURL(url);
+                    return;
+                }
+                batch.urls.add(url);
 
                 let now = new Date(Date.now());
                 let year = now.getFullYear().toString();
@@ -1024,9 +1055,12 @@ class ReceiveFileDialog extends ReceiveDialog {
             }
         }
 
+        if (batch.cancelled || this._activeBatch !== batch) return;
         this.$downloadBtn.removeAttribute('disabled');
         this.$downloadBtn.innerText = Localization.getTranslation("dialogs.download");
-        this.$downloadBtn.onclick = _ => {
+        const saveBatch = () => {
+            if (batch.saved || batch.cancelled || this._activeBatch !== batch) return;
+            batch.saved = true;
             if (downloadZipped) {
                 let tmpZipBtn = document.createElement("a");
                 tmpZipBtn.download = filenameDownload;
@@ -1034,7 +1068,7 @@ class ReceiveFileDialog extends ReceiveDialog {
                 tmpZipBtn.click();
             }
             else {
-                this._downloadFilesIndividually(files);
+                this._downloadFilesIndividually(files, batch);
             }
 
             if (!canShare) {
@@ -1042,10 +1076,11 @@ class ReceiveFileDialog extends ReceiveDialog {
             }
             Events.fire('notify-user', Localization.getTranslation("notifications.download-successful", null, {descriptor: descriptor}));
 
-            // Prevent clicking the button multiple times
-            this.$downloadBtn.style.pointerEvents = "none";
-            setTimeout(() => this.$downloadBtn.style.pointerEvents = "unset", 2000);
+            // Complete the receipt independently of the dialog (also hidden by Android).
+            Events.fire('files-saved', {peerId, files});
+            this.hide();
         };
+        this.$downloadBtn.onclick = saveBatch;
 
         document.title = files.length === 1
             ? `${ Localization.getTranslation("document-titles.file-received") } - PairDrop`
@@ -1055,17 +1090,13 @@ class ReceiveFileDialog extends ReceiveDialog {
         Events.fire('set-progress', {peerId: peerId, progress: 1, status: 'process'})
         this.show();
 
-        setTimeout(() => {
-            // wait for the dialog to be shown
-            if (canShare) {
-                this.$shareBtn.click();
-            }
-            else {
-                this.$downloadBtn.click();
-            }
+        this._autoSaveTimer = setTimeout(() => {
+            if (batch.cancelled || this._activeBatch !== batch) return;
+            if (!canShare) saveBatch();
+            // Native sharing requires a real user gesture. Keep its button available.
         }, 500);
 
-        this.createPreviewElement(files[0])
+        this.createPreviewElement(files[0], batch)
             .then(canPreview => {
                 if (canPreview) {
                     console.log('the file is able to preview');
@@ -1077,21 +1108,32 @@ class ReceiveFileDialog extends ReceiveDialog {
             .catch(r => console.error(r));
     }
 
-    _downloadFilesIndividually(files) {
+    _downloadFilesIndividually(files, batch) {
         let tmpBtn = document.createElement("a");
         for (let i=0; i<files.length; i++) {
             tmpBtn.download = files[i].name;
             tmpBtn.href = URL.createObjectURL(files[i]);
+            batch.urls.add(tmpBtn.href);
             tmpBtn.click();
         }
     }
 
     hide() {
+        const batch = this._activeBatch;
+        if (!batch || batch.cancelled) return;
+        batch.cancelled = true;
+        clearTimeout(this._autoSaveTimer);
+        this.$downloadBtn.onclick = null;
+        this.$shareBtn.onclick = null;
         super.hide();
         setTimeout(async () => {
+            if (this._activeBatch !== batch) return;
             this.$shareBtn.setAttribute('hidden', true);
             this.$downloadBtn.setAttribute('disabled', true);
             this.$previewBox.innerHTML = '';
+            // Give the browser download subsystem time to acquire object URLs.
+            setTimeout(() => batch.urls.forEach(url => URL.revokeObjectURL(url)), 30000);
+            this._activeBatch = null;
             this._busy = false;
             await this._nextFiles();
         }, 300);
@@ -2047,6 +2089,7 @@ class ReceiveTextDialog extends Dialog {
     }
 
     _onText(text, peerId) {
+        if (window.PairDropHost) return; // Native notifications own their immutable payloads.
         window.blop.play();
         this._receiveTextQueue.push({text: text, peerId: peerId});
         this._setDocumentTitleMessages();
@@ -2479,7 +2522,7 @@ class Notifications {
 
     constructor() {
         // Check if the browser supports notifications
-        if (!('Notification' in window)) return;
+        if (window.PairDropHost || !('Notification' in window)) return;
 
         this.$headerNotificationButton = $('notification');
         this.$downloadBtn = $('download-btn');
@@ -2514,14 +2557,14 @@ class Notifications {
             notification = new Notification(title, config);
         } catch (e) {
             // Android doesn't support "new Notification" if service worker is installed
-            if (!serviceWorker || !serviceWorker.showNotification) return;
+            if (!window.serviceWorker?.showNotification) return;
             notification = serviceWorker.showNotification(title, config);
         }
 
         // Notification is persistent on Android. We have to close it manually
         const visibilitychangeHandler = () => {
             if (document.visibilityState === 'visible') {
-                notification.close();
+                notification?.close?.();
                 Events.off('visibilitychange', visibilitychangeHandler);
             }
         };
@@ -2533,9 +2576,10 @@ class Notifications {
     _messageNotification(message, peerId) {
         if (document.visibilityState !== 'visible') {
             const peerDisplayName = $(peerId).ui._displayName();
-            if (/^((https?:\/\/|www)[abcdefghijklmnopqrstuvwxyz0123456789\-._~:\/?#\[\]@!$&'()*+,;=]+)$/.test(message.toLowerCase())) {
+            const url = extractFirstHttpUrl(message);
+            if (url) {
                 const notification = this._notify(Localization.getTranslation("notifications.link-received", null, {name: peerDisplayName}), message);
-                this._bind(notification, _ => window.open(message, '_blank', "noreferrer"));
+                this._bind(notification, () => window.open(url, '_blank', "noreferrer"));
             }
             else {
                 const notification = this._notify(Localization.getTranslation("notifications.message-received", null, {name: peerDisplayName}), message);
@@ -2566,8 +2610,11 @@ class Notifications {
                 }
                 title = `${files[0].name} ${fileOther}`
             }
-            const notification = this._notify(title, Localization.getTranslation("notifications.click-to-download"));
-            this._bind(notification, _ => this._download(notification));
+            const notification = this._notify(title, Localization.getTranslation("notifications.click-to-show"));
+            this._bind(notification, () => {
+                window.focus();
+                notification?.close?.();
+            });
         }
     }
 
@@ -2599,22 +2646,20 @@ class Notifications {
         }
     }
 
-    _download(notification) {
-        this.$downloadBtn.click();
-        notification.close();
-    }
 
     async _copyText(message, notification) {
-        if (await navigator.clipboard.writeText(message)) {
-            notification.close();
+        try {
+            await navigator.clipboard.writeText(message);
+            notification?.close?.();
             this._notify(Localization.getTranslation("notifications.copied-text"));
-        }
-        else {
+        } catch (error) {
+            window.focus();
             this._notify(Localization.getTranslation("notifications.copied-text-error"));
         }
     }
 
     _bind(notification, handler) {
+        if (!notification) return;
         if (notification.then) {
             notification.then(_ => {
                 serviceWorker

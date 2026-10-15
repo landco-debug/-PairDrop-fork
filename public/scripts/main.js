@@ -12,6 +12,8 @@ class PairDrop {
         this.deferredScripts = [
             "scripts/browser-tabs-connector.js",
             "scripts/util.js",
+            "scripts/link-utils.js",
+            "scripts/native-bridge.js",
             "scripts/network.js",
             "scripts/ui.js",
             "scripts/libs/heic2any.min.js",
@@ -70,7 +72,7 @@ class PairDrop {
     }
 
     registerServiceWorker() {
-        if ('serviceWorker' in navigator) {
+        if (!window.PairDropHost && 'serviceWorker' in navigator) {
             navigator.serviceWorker
                 .register('service-worker.js')
                 .then(serviceWorker => {
@@ -186,6 +188,7 @@ class PairDrop {
         this.broadCast = new BrowserTabsConnector();
         this.server = new ServerConnection();
         this.peers = new PeersManager(this.server);
+        if (window.PairDropHost) this.nativeBridge = new NativeBridge(this);
     }
 
     async evaluateUrlParams() {
