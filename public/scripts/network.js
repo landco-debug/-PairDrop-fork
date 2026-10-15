@@ -401,6 +401,7 @@ class Peer {
         }
 
         this._roomIds[roomType] = roomId;
+        Events.fire('peer-room-types-changed', {peerId: this._peerId});
 
         if (!this._isSameBrowser()
             &&  roomTypeIsSecret

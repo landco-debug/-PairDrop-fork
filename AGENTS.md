@@ -17,6 +17,17 @@ The user has authorized implementation, commits, pushes and CI builds in this re
   No Homebrew, Xcode Command Line Tools or GitHub Desktop on the user's computer.
 - Send selected text and links through macOS Services; send files through Finder Services
   and a Share extension. Apps with custom menus may not expose Services: document this.
+- macOS must run without a Dock icon (`LSUIElement` / accessory policy). Closing or
+  minimizing its window must leave reception available. The menu-bar icon is optional;
+  the window must provide a menu for quit/reopen/settings and opening the app reopens it.
+- A Chrome PairDrop tab and the native client are two independent endpoints, not a
+  duplicate process. Never hide arbitrary Mac peers just because their OS/name matches.
+  Identify this native endpoint clearly and explain that the old browser tab should close.
+- Sending after minimization must wait for the preferred paired receiver, not choose a
+  faster-discovered browser peer. Use bounded event-driven discovery and preserve the
+  original command, without retrying completed transfers.
+- Incoming transfer notifications must refer to a specific pending request and offer
+  native accept/decline. Clicking expired notifications must never accept another request.
 - Keep receiving while the Mac window is closed. Closing a window must not quit the receiver.
   A background receiver consumes resources: never promise zero RAM/CPU or delivery while quit/asleep.
   Avoid Electron and clipboard polling. Provide a way to reopen the window and quit.

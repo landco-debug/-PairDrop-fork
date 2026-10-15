@@ -1164,6 +1164,7 @@ class ReceiveRequestDialog extends ReceiveDialog {
     }
 
     _onRequestFileTransfer(request, peerId) {
+        if (window.PairDropHost) return; // Native request notifications own accept/decline.
         this._filesTransferRequestQueue.push({request: request, peerId: peerId});
         if (this.isShown()) return;
         this._dequeueRequests();
@@ -2643,6 +2644,10 @@ class Notifications {
                 });
 
             const notification = this._notify(title, Localization.getTranslation("notifications.click-to-show"));
+            this._bind(notification, () => {
+                window.focus();
+                notification?.close?.();
+            });
         }
     }
 

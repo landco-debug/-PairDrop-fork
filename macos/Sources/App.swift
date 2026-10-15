@@ -15,7 +15,7 @@ struct PairDropMain {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-                         WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKUIDelegate,
+                         WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKUIDelegate, NSToolbarDelegate,
                          UNUserNotificationCenterDelegate {
     private var window: NSWindow!
     private var webView: WKWebView!
@@ -29,11 +29,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var active: [String: [String]] = [:]
     private var statusItem: NSStatusItem?
     private var activity: NSObjectProtocol?
+    private var preparingSend = false
+    private var incoming: [String: [String: Any]] = [:]
+    private var showingIncoming = false
+    private var selfTestAcceptedIncoming = false
     private let selfTest = CommandLine.arguments.contains("--self-test")
     private var preferred: String? { UserDefaults.standard.string(forKey: "preferred-peer") }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
         installMenu()
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
@@ -41,6 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         center.delegate = self
         center.setNotificationCategories([UNNotificationCategory(identifier: "text", actions: [
             UNNotificationAction(identifier: "copy", title: "Копировать", options: [])
+        ], intentIdentifiers: [], options: []),
+        UNNotificationCategory(identifier: "transfer", actions: [
+            UNNotificationAction(identifier: "acceptTransfer", title: "Принять", options: []),
+            UNNotificationAction(identifier: "declineTransfer", title: "Отклонить", options: [])
         ], intentIdentifiers: [], options: [])])
         if !selfTest { center.requestAuthorization(options: [.alert, .sound]) { _, _ in } }
         // Event-driven sockets, no clipboard polling. Let the display sleep normally.
@@ -55,13 +63,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             }
         } catch { fail(error.localizedDescription) }
         if selfTest {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 45) { self.finishSelfTest(false, "Frontend initialization timed out") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 90) { self.finishSelfTest(false, "Frontend initialization timed out") }
         }
     }
 
     private func createWindow() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        // Official API: keep event-driven signaling/data channels running without a visible window.
+        config.preferences.inactiveSchedulingPolicy = .none
         config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "pairdrop")
         let bridge = "window.PairDropHost = Object.freeze({call: (kind, data = {}) => window.webkit.messageHandlers.pairdrop.postMessage({kind, data})});"
         config.userContentController.addUserScript(WKUserScript(source: bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -70,10 +80,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         webView.uiDelegate = self
         window = NSWindow(contentRect: webView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "PairDrop Fork"
+        window.title = "PairDrop Fork · v2"
         window.contentView = webView
         window.delegate = self
         window.isReleasedWhenClosed = false
+        let toolbar = NSToolbar(identifier: "PairDrop-controls")
+        toolbar.delegate = self
+        toolbar.displayMode = .labelOnly
+        window.toolbar = toolbar
         window.center()
         showWindow()
         webView.load(URLRequest(url: server.baseURL))
@@ -93,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let services = NSMenuItem(title: "Службы", action: nil, keyEquivalent: "")
         services.submenu = NSMenu(title: "Службы"); appMenu.addItem(services); NSApp.servicesMenu = services.submenu
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Входящие запросы…", action: #selector(showIncomingRequests), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: "Сбросить получателя по умолчанию", action: #selector(clearPreferred), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: "Значок в строке меню", action: #selector(toggleStatusItem), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
@@ -107,6 +122,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if UserDefaults.standard.bool(forKey: "show-status-item") { updateStatusItem() }
     }
 
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, NSToolbarItem.Identifier("receiver-menu")]
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard identifier.rawValue == "receiver-menu" else { return nil }
+        let item = NSMenuToolbarItem(itemIdentifier: identifier)
+        item.label = "Меню"
+        item.menu = receiverMenu()
+        return item
+    }
+    private func receiverMenu() -> NSMenu {
+        (NSApp.mainMenu?.items.first?.submenu?.copy() as? NSMenu) ?? NSMenu()
+    }
     @objc private func toggleStatusItem() {
         UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "show-status-item"), forKey: "show-status-item")
         updateStatusItem()
@@ -116,12 +148,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if UserDefaults.standard.bool(forKey: "show-status-item") {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             item.button?.image = NSImage(systemSymbolName: "arrow.up.arrow.down.circle", accessibilityDescription: "PairDrop")
-            item.button?.target = self; item.button?.action = #selector(showWindow)
+            item.menu = receiverMenu()
             statusItem = item
         }
     }
 
-    @objc func showWindow() { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    @objc func showWindow() {
+        if window?.isMiniaturized == true { window.deminiaturize(nil) }
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
     @objc private func clearPreferred() { UserDefaults.standard.removeObject(forKey: "preferred-peer") }
     @objc private func selectFiles() {
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
@@ -168,53 +204,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         command["created"] = Date().timeIntervalSince1970
         pending.append(command)
         if ready { drain() }
-        let id = command["id"] as! String
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
-            guard let self = self, let index = self.pending.firstIndex(where: { $0["id"] as? String == id }) else { return }
-            self.release(self.pending.remove(at: index))
-            self.showWindow()
-            self.fail("Получатель недоступен. Откройте PairDrop на телефоне и повторите отправку.")
-        }
     }
 
     private func drain() {
-        guard ready, online, !peers.isEmpty else { return }
-        while !pending.isEmpty {
-            var command = pending.removeFirst()
-            guard online, !peers.isEmpty else {
-                release(command)
-                showWindow()
-                fail("Получатель сейчас недоступен. Откройте PairDrop на телефоне или включите фоновый приём, затем повторите отправку.")
-                continue
+        guard ready, !preparingSend, !pending.isEmpty else { return }
+        preparingSend = true
+        let command = pending.removeFirst()
+        // Keep this exact command/capability while waking signaling and waiting for the phone.
+        webView.callAsyncJavaScript("return await window.PairDropBridge.prepareToSend({preferred});",
+                                    arguments: ["preferred": preferred as Any? ?? NSNull()], in: nil, in: .page) { [weak self] result in
+            guard let self = self else { return }
+            defer { self.preparingSend = false; self.drain() }
+            switch result {
+            case .failure(let error):
+                self.release(command)
+                self.fail(error.localizedDescription)
+            case .success(let raw):
+                self.chooseAndSend(command, choices: raw as? [[String: Any]] ?? [])
             }
-            var target = peers.first { ($0["stableId"] as? String) == preferred }
-            if target == nil {
-                showWindow()
-                let alert = NSAlert()
-                alert.messageText = "Отправить через PairDrop"
-                alert.informativeText = "Выберите получателя. Для сопряжённого устройства выбор запомнится."
-                alert.addButton(withTitle: "Отправить"); alert.addButton(withTitle: "Отмена")
-                let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 28))
-                let choices = peers
-                choices.forEach { picker.addItem(withTitle: ($0["name"] as? String ?? "Устройство") + (($0["paired"] as? Bool == true) ? " • сопряжено" : "")) }
-                alert.accessoryView = picker
-                if alert.runModal() == .alertFirstButtonReturn {
-                    target = choices[picker.indexOfSelectedItem]
-                    if target?["paired"] as? Bool == true { UserDefaults.standard.set(target?["stableId"], forKey: "preferred-peer") }
-                }
+        }
+    }
+
+    private func chooseAndSend(_ payload: [String: Any], choices: [[String: Any]]) {
+        var command = payload
+        guard !choices.isEmpty else { release(command); fail("Получатель недоступен"); return }
+        var target = choices.first { ($0["stableId"] as? String) == preferred }
+        if preferred != nil && target == nil {
+            release(command)
+            fail("Сохранённый телефон ещё не подключён. Другому устройству файлы не отправлены.")
+            return
+        }
+        if target == nil {
+            showWindow()
+            let alert = NSAlert()
+            alert.messageText = "Отправить через PairDrop"
+            alert.informativeText = "Выберите получателя. Сопряжённое устройство запомнится. Старую вкладку pairdrop.net в Chrome можно закрыть."
+            alert.addButton(withTitle: "Отправить"); alert.addButton(withTitle: "Отмена")
+            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+            choices.forEach {
+                let device = $0["deviceName"] as? String ?? ""
+                picker.addItem(withTitle: ($0["name"] as? String ?? "Устройство") + (device.isEmpty ? "" : " — " + device)
+                    + (($0["paired"] as? Bool == true) ? " • сопряжено" : ""))
             }
-            guard let to = target?["id"] as? String, let id = command["id"] as? String else { release(command); continue }
-            command.removeValue(forKey: "created"); command["to"] = to
-            let tokens = (command["files"] as? [[String: Any]] ?? []).compactMap { $0["token"] as? String }
-            active[id] = tokens
-            webView.callAsyncJavaScript("return await window.PairDropBridge.send(command);", arguments: ["command": command], in: nil, in: .page) { [weak self] result in
-                if case .failure(let error) = result { self?.complete(id, error: error.localizedDescription) }
+            alert.accessoryView = picker
+            if alert.runModal() == .alertFirstButtonReturn {
+                target = choices[picker.indexOfSelectedItem]
+                if target?["paired"] as? Bool == true { UserDefaults.standard.set(target?["stableId"], forKey: "preferred-peer") }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
-                // Never resend automatically. The original file capability stays valid while a transfer is active.
-                guard let self = self, self.active[id] != nil else { return }
-                self.notify(title: "Передача ещё выполняется", body: "Проверьте состояние PairDrop. Повторная отправка автоматически не запускается.", payload: [:])
-            }
+        }
+        guard let to = target?["id"] as? String, let id = command["id"] as? String else { release(command); return }
+        command.removeValue(forKey: "created"); command["to"] = to
+        active[id] = (command["files"] as? [[String: Any]] ?? []).compactMap { $0["token"] as? String }
+        webView.callAsyncJavaScript("return await window.PairDropBridge.send(command);", arguments: ["command": command], in: nil, in: .page) { [weak self] result in
+            if case .failure(let error) = result { self?.complete(id, error: error.localizedDescription) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+            guard let self = self, self.active[id] != nil else { return }
+            self.notify(title: "Передача ещё выполняется", body: "Проверьте состояние PairDrop. Повторная отправка автоматически не запускается.", payload: [:])
         }
     }
 
@@ -249,6 +295,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 peers = data["peers"] as? [[String: Any]] ?? []
                 drain()
             case "show": showWindow()
+            case "request":
+                if let id = data["id"] as? String {
+                    incoming[id] = data
+                    let names = data["names"] as? [String] ?? []
+                    notify(title: "Запрос файла от " + (data["sender"] as? String ?? "устройства"),
+                           body: names.prefix(3).joined(separator: ", ") + " · Принять или отклонить",
+                           payload: ["request": id], identifier: "request-" + id)
+                    if selfTest && data["peerId"] as? String == "ci-hidden-sender" {
+                        DispatchQueue.main.async { self.respondIncoming(id, accepted: true) }
+                    }
+                    if !selfTest && NSApp.isActive && window.isVisible {
+                        DispatchQueue.main.async { self.presentIncoming(id) }
+                    }
+                }
+            case "requestExpired":
+                if let id = data["id"] as? String { expireIncoming(id) }
             case "text":
                 let text = data["text"] as? String ?? ""
                 var payload: [String: Any] = ["text": text]
@@ -259,7 +321,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             case "beginFile":
                 let id = try receiveStore.begin(name: data["name"] as? String ?? "file", size: (data["size"] as? NSNumber)?.int64Value ?? -1, peerId: data["peerId"] as? String ?? "")
                 replyHandler(["id": id], nil); return
-            case "peerLeft": receiveStore.cancel(peerId: data["peerId"] as? String ?? "")
+            case "peerLeft":
+                let peerId = data["peerId"] as? String ?? ""
+                receiveStore.cancel(peerId: peerId)
+                for (id, request) in incoming where request["peerId"] as? String == peerId { expireIncoming(id) }
             case "appendFile":
                 try receiveStore.append(id: data["id"] as? String ?? "", base64: data["data"] as? String ?? "")
             case "finishFile":
@@ -273,12 +338,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         } catch { replyHandler(nil, error.localizedDescription) }
     }
 
-    private func notify(title: String, body: String, payload: [String: Any]) {
+    private func expireIncoming(_ id: String) {
+        incoming.removeValue(forKey: id)
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["request-" + id])
+    }
+    @objc private func showIncomingRequests() {
+        if let id = incoming.keys.first { presentIncoming(id) }
+        else { fail("Нет ожидающих запросов на передачу") }
+    }
+    private func presentIncoming(_ id: String) {
+        guard !showingIncoming, let request = incoming[id] else { return }
+        showingIncoming = true
+        defer { showingIncoming = false }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Принять файл от " + (request["sender"] as? String ?? "устройства") + "?"
+        let names = request["names"] as? [String] ?? []
+        let size = (request["size"] as? NSNumber)?.int64Value ?? 0
+        alert.informativeText = names.prefix(5).joined(separator: "\n") + "\n" + ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        alert.addButton(withTitle: "Принять"); alert.addButton(withTitle: "Отклонить")
+        let accepted = alert.runModal() == .alertFirstButtonReturn
+        if incoming[id] != nil { respondIncoming(id, accepted: accepted) }
+    }
+    private func respondIncoming(_ id: String, accepted: Bool) {
+        guard incoming[id] != nil else { return }
+        webView.callAsyncJavaScript("return window.PairDropBridge.respondToRequest(id, accepted);",
+                                    arguments: ["id": id, "accepted": accepted], in: nil, in: .page) { [weak self] result in
+            self?.expireIncoming(id)
+            if case .success(let accepted) = result, self?.selfTest == true, accepted as? Bool == true {
+                self?.selfTestAcceptedIncoming = true
+            }
+            if case .failure(let error) = result { self?.fail(error.localizedDescription) }
+        }
+    }
+
+    private func notify(title: String, body: String, payload: [String: Any], identifier: String = UUID().uuidString) {
         guard !selfTest else { return }
         let content = UNMutableNotificationContent()
         content.title = title; content.body = String(body.prefix(1000)); content.userInfo = payload
         if payload["text"] != nil { content.categoryIdentifier = "text" }
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        if payload["request"] != nil { content.categoryIdentifier = "transfer" }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
     }
     static func webURL(_ raw: String) -> URL? {
         guard let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return nil }
@@ -288,7 +388,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         DispatchQueue.main.async {
             let data = response.notification.request.content.userInfo
-            if response.actionIdentifier == "copy", let text = data["text"] as? String { self.copy(text) }
+            if let id = data["request"] as? String {
+                if response.actionIdentifier == "acceptTransfer" { self.respondIncoming(id, accepted: true) }
+                else if response.actionIdentifier == "declineTransfer" { self.respondIncoming(id, accepted: false) }
+                else if response.actionIdentifier == UNNotificationDefaultActionIdentifier { self.presentIncoming(id) }
+            }
+            else if response.actionIdentifier == "copy", let text = data["text"] as? String { self.copy(text) }
             else if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
                 if let raw = data["url"] as? String, let url = Self.webURL(raw) { NSWorkspace.shared.open(url) }
                 else if let text = data["text"] as? String { self.copy(text) }
@@ -339,26 +444,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     private func runSelfTest() {
         window.orderOut(nil)
-        let script = """
-        const complete = await new Promise((resolve, reject) => {
-            const digester = new FileDigester({name: 'pairdrop-ci-smoke.bin', size: 5, mime: 'application/octet-stream'}, 5, 0, resolve, reject);
-            digester.unchunk(new Uint8Array([0, 1, 255]).buffer);
-            digester.unchunk(new Uint8Array([128, 42]).buffer);
-        });
-        return {secure: window.isSecureContext, rtc: !!window.RTCPeerConnection,
-            bridge: !!window.PairDropBridge, disk: complete.nativeSaved === true && complete.size === 5};
-        """
+        window.contentView = NSView() // Exercise WKPreferences when detached, not just momentarily hidden.
+        guard let url = Bundle.main.url(forResource: "self-test", withExtension: "js"),
+              let script = try? String(contentsOf: url, encoding: .utf8) else {
+            finishSelfTest(false, "Missing WebRTC integration test"); return
+        }
         webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { result in
             switch result {
             case .success(let raw):
                 let values = raw as? [String: Bool] ?? [:]
-                let path = self.receiveStore.directory.appendingPathComponent("pairdrop-ci-smoke.bin")
+                let path = self.receiveStore.directory.appendingPathComponent("pairdrop-ci-v2.bin")
                 let bytes = try? Data(contentsOf: path)
                 let service = self.responds(to: NSSelectorFromString("sendSelection:userData:error:"))
                 let success = values["secure"] == true && values["rtc"] == true && values["bridge"] == true
-                    && values["disk"] == true && bytes == Data([0, 1, 255, 128, 42]) && service
+                    && values["disk"] == true && bytes == Data((0..<1100123).map { UInt8($0 % 251) }) && service
+                    && self.selfTestAcceptedIncoming && NSApp.activationPolicy() == .accessory
+                    && self.webView.configuration.preferences.inactiveSchedulingPolicy == .none
                 try? FileManager.default.removeItem(at: path)
-                self.finishSelfTest(success, "hidden window, secure origin, WebRTC, streamed disk receive, Services selector: \(values), service=\(service)")
+                self.finishSelfTest(success, "detached background WebRTC, native request acceptance, 1.1 MB disk receive, no Dock: \(values), service=\(service), nativeAccept=\(self.selfTestAcceptedIncoming)")
             case .failure(let error): self.finishSelfTest(false, error.localizedDescription)
             }
         }

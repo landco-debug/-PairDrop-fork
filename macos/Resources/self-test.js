@@ -1,0 +1,62 @@
+// Real WebRTC data channels + production Peer/NativeBridge + native streamed disk writes.
+const left = new RTCPeerConnection({iceServers: []});
+const right = new RTCPeerConnection({iceServers: []});
+const sender = new Peer(null, true, 'ci-hidden-receiver', 'ip', 'ci');
+const receiver = new Peer(null, false, 'ci-hidden-sender', 'ip', 'ci');
+receiver._conn = right;
+pairDrop.peers.peers['ci-hidden-sender'] = receiver;
+const outgoing = left.createDataChannel('production-transfer', {ordered: true});
+sender._channel = outgoing;
+sender._send = message => outgoing.send(message);
+outgoing.onmessage = event => sender._onMessage(event.data);
+outgoing.binaryType = 'arraybuffer';
+const waitOpen = channel => channel.readyState === 'open' ? Promise.resolve() : new Promise(resolve => { channel.onopen = resolve; });
+const incomingReady = new Promise(resolve => {
+    right.ondatachannel = async event => {
+        receiver._channel = event.channel;
+        event.channel.binaryType = 'arraybuffer';
+        event.channel.onmessage = message => receiver._onMessage(message.data);
+        receiver._send = message => event.channel.send(message);
+        await waitOpen(event.channel);
+        resolve();
+    };
+});
+const gather = pc => pc.iceGatheringState === 'complete' ? Promise.resolve() : new Promise(resolve => {
+    pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') resolve(); });
+});
+await left.setLocalDescription(await left.createOffer());
+await gather(left);
+await right.setRemoteDescription(left.localDescription);
+await right.setLocalDescription(await right.createAnswer());
+await gather(right);
+await left.setRemoteDescription(right.localDescription);
+await Promise.all([waitOpen(outgoing), incomingReady]);
+// The native test has removed this web view from its window before starting.
+await new Promise(resolve => setTimeout(resolve, 2500));
+const received = new Promise(resolve => {
+    const handler = event => {
+        if (event.detail.peerId !== 'ci-hidden-sender') return;
+        Events.off('files-received', handler);
+        resolve(event.detail.files[0]);
+    };
+    Events.on('files-received', handler);
+});
+const acknowledged = new Promise(resolve => {
+    const handler = event => {
+        if (event.detail.requestId !== 'ci-file-once') return;
+        Events.off('files-sent', handler);
+        resolve();
+    };
+    Events.on('files-sent', handler);
+});
+const bytes = new Uint8Array(1100123);
+for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+await sender.requestFileTransfer([new File([bytes], 'pairdrop-ci-v2.bin', {type: 'application/octet-stream'})], 'ci-file-once');
+const complete = await received;
+await acknowledged;
+const result = {secure: window.isSecureContext, rtc: true, bridge: !!window.PairDropBridge,
+    disk: complete.nativeSaved === true && complete.size === bytes.length,
+    hidden: document.hidden, requestAccepted: !receiver._requestPending};
+left.close(); right.close();
+delete pairDrop.peers.peers['ci-hidden-sender'];
+return result;

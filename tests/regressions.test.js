@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import {webcrypto} from 'node:crypto';
 
 class Element {
     constructor() {
@@ -34,7 +35,7 @@ function harness() {
         close() { this.closed = true; }
     }
     const context = vm.createContext({
-        console: {log() {}, error() {}, warn() {}}, Blob, File, URL: class extends URL {
+        console: {log() {}, error() {}, warn() {}}, Blob, File, crypto: webcrypto, TextEncoder, URL: class extends URL {
             static createObjectURL() { return `blob:${++serial}`; }
             static revokeObjectURL(url) { revoked.push(url); }
         },
@@ -46,6 +47,7 @@ function harness() {
         Notification: FakeNotification,
         document: {
             visibilityState: 'hidden', activeElement: new Element(),
+            getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
             createElement(type) {
                 const el = new Element();
                 if (type === 'a') el.click = () => downloads.push(el.download);
@@ -57,6 +59,7 @@ function harness() {
         changeFavicon() {},
         Localization: {getTranslation: key => key},
         BrowserTabsConnector: {peerIsSameBrowser: () => false},
+        PersistentStorage: {getAllRoomSecrets: async () => []},
         Events: {
             on(name, fn) { if (!listeners.has(name)) listeners.set(name, []); listeners.get(name).push(fn); },
             off(name, fn) { listeners.set(name, (listeners.get(name) || []).filter(x => x !== fn)); },
@@ -66,10 +69,10 @@ function harness() {
             }
         }
     });
-    for (const name of ['link-utils', 'network', 'ui']) {
+    for (const name of ['link-utils', 'network', 'ui', 'native-bridge']) {
         vm.runInContext(readFileSync(new URL(`../public/scripts/${name}.js`, import.meta.url), 'utf8'), context);
     }
-    const classes = vm.runInContext('({ServerConnection, Peer, PeersManager, FileDigester, PairDeviceDialog, PublicRoomDialog, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
+    const classes = vm.runInContext('({NativeBridge, ServerConnection, Peer, PeersManager, FileDigester, PairDeviceDialog, PublicRoomDialog, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
     async function tick(delta) {
         const target = time + delta;
         for (;;) {
@@ -82,7 +85,7 @@ function harness() {
         }
         time = target;
     }
-    return {context, ...classes, tick, events, downloads, revoked, notifications, timers};
+    return {context, ...classes, tick, events, downloads, revoked, notifications, timers, listeners};
 }
 
 const file = name => new File(['abc'], name, {type: 'application/octet-stream'});
@@ -214,7 +217,7 @@ test('native receive streams chunks, waits for disk before acknowledging a parti
     peer._onFileHeader({name: 'native', size: 6, mime: 'application/octet-stream'});
     peer._onChunkReceived(new Uint8Array([1, 2, 3]).buffer);
     peer._onReceivedPartitionEnd({offset: 3});
-    await Promise.resolve(); await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(replies.some(reply => reply.type === 'partition-received'), false);
     releaseWrite();
     for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
@@ -267,4 +270,96 @@ test('native pairing and room QR URLs use the shared public server rather than M
     delete h.context.window.PairDropHost;
     h.context.location = {href: 'https://selfhost.example/'};
     assert.equal(h.PairDeviceDialog.prototype._getPairUrl.call({pairKey: '123456'}), 'https://selfhost.example/?pair_key=123456');
+});
+
+function nativeFixture(h, knownPairs = []) {
+    const hostCalls = [], discovery = [], sent = [];
+    h.context.window.PairDropHost = {call: async (kind, data) => { hostCalls.push({kind, data}); return true; }};
+    h.context.PersistentStorage.getAllRoomSecrets = async () => knownPairs;
+    const app = {peers: {peers: {}}, server: {
+        _connect() { discovery.push('connect'); }, _isConnected() { return true; },
+        send(message) { discovery.push(message.type); }
+    }};
+    const bridge = new h.NativeBridge(app);
+    let inventory = [];
+    bridge.snapshot = async () => inventory;
+    return {app, bridge, hostCalls, discovery, sent, inventory(peers) { inventory = peers; }};
+}
+
+test('one context send waits past the browser peer and sends the original file once when the saved phone arrives', async () => {
+    const h = harness(), f = nativeFixture(h, ['saved-secret']);
+    const meta = {name: 'first-file.bin', size: 100, type: 'application/octet-stream', token: 'original-capability'};
+    f.inventory([{id: 'browser', stableId: 'browser', paired: false}]);
+    const send = f.bridge.prepareToSend({preferred: 'saved-phone'}).then(peers =>
+        f.bridge.send({id: 'first-send', to: peers.find(p => p.stableId === 'saved-phone').id, files: [meta]}));
+    await new Promise(resolve => setImmediate(resolve));
+    await h.tick(2000);
+    assert.deepEqual(f.sent, []);
+    f.app.peers.peers.phone = {_channel: {readyState: 'open'}, requestFileTransfer: async (files, id) => f.sent.push({files, id})};
+    f.inventory([{id: 'browser', stableId: 'browser', paired: false}, {id: 'phone', stableId: 'saved-phone', paired: true}]);
+    h.context.Events.fire('peer-connected', {peerId: 'phone'});
+    await send;
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].files[0].name, 'first-file.bin');
+    assert.equal(f.sent[0].id, 'first-send');
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.listeners.get('peer-connected').length, 1); // Permanent publisher only.
+});
+
+test('a missing preferred phone times out without falling back to the faster browser and releases listeners', async () => {
+    const h = harness(), f = nativeFixture(h, ['saved-secret']);
+    f.app.server._isConnected = () => false;
+    f.inventory([{id: 'browser', stableId: 'browser', paired: false}]);
+    const pending = f.bridge.prepareToSend({preferred: 'missing', timeoutMs: 3000});
+    const rejected = assert.rejects(pending, /недоступен/);
+    await new Promise(resolve => setImmediate(resolve));
+    await h.tick(3001);
+    await rejected;
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.listeners.get('ws-connected').length, 1);
+    assert.deepEqual(f.sent, []);
+});
+
+test('the first receiver chooser waits for known paired devices before offering an unpaired browser', async () => {
+    const h = harness(), f = nativeFixture(h, ['known-phone']);
+    f.inventory([{id: 'browser', stableId: 'browser', paired: false}]);
+    let offered;
+    const pending = f.bridge.prepareToSend().then(peers => { offered = peers; });
+    await new Promise(resolve => setImmediate(resolve)); await h.tick(2000);
+    assert.equal(offered, undefined);
+    f.inventory([{id: 'phone', stableId: 'paired', paired: true}]);
+    h.context.Events.fire('peer-connected', {peerId: 'phone'});
+    await h.tick(1200); await pending;
+    assert.equal(offered[0].id, 'phone');
+});
+
+test('incoming native actions accept only their own pending request; an expired notification cannot accept the next file', () => {
+    const h = harness(), f = nativeFixture(h), manager = new h.PeersManager(f.app.server);
+    f.app.peers = manager;
+    const peer = new h.Peer(null, true, 'phone', 'ip', 'local'), wire = [];
+    peer._send = data => wire.push(JSON.parse(data));
+    manager.peers.phone = peer;
+    const first = {header: [{name: 'A', size: 3}], totalSize: 3};
+    peer._onFilesTransferRequest(first);
+    const id = f.hostCalls.find(call => call.kind === 'request').data.id;
+    assert.equal(f.bridge.respondToRequest(id, true), true);
+    assert.equal(peer._requestAccepted, first);
+    assert.equal(wire.at(-1).accepted, true);
+    peer._requestAccepted = null;
+    peer._onFilesTransferRequest({header: [{name: 'B', size: 5}], totalSize: 5});
+    const count = wire.length;
+    assert.equal(f.bridge.respondToRequest(id, true), false);
+    assert.equal(wire.length, count);
+    assert.equal(peer._requestPending.header[0].name, 'B');
+});
+
+test('web transfer request notifications bind an actual click action', () => {
+    const h = harness(), notifications = new h.Notifications();
+    let focused = false;
+    h.context.window.focus = () => { focused = true; };
+    notifications._requestNotification({header: [{name: 'A', mime: 'text/plain'}]}, 'phone');
+    assert.equal(typeof h.notifications[0].onclick, 'function');
+    h.notifications[0].onclick();
+    assert.equal(focused, true);
+    assert.equal(h.notifications[0].closed, true);
 });

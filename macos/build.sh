@@ -9,6 +9,7 @@ cp macos/Info.plist "$app/Contents/Info.plist"
 cp macos/ShareExtension/Info.plist "$extension/Contents/Info.plist"
 cp -R public "$app/Contents/Resources/Web"
 cp LICENSE "$app/Contents/Resources/LICENSE.txt"
+cp macos/Resources/self-test.js "$app/Contents/Resources/self-test.js"
 xcrun swiftc -swift-version 5 -O -target arm64-apple-macos14.0 \
     -framework AppKit -framework WebKit -framework Network -framework UserNotifications -framework UniformTypeIdentifiers \
     macos/Sources/*.swift -o "$app/Contents/MacOS/PairDropFork"

@@ -33,18 +33,18 @@ jobs:
         run: |
           xcrun swiftc -swift-version 5 macos/Sources/LocalServer.swift macos/Sources/ReceiveStore.swift macos/Tests/main.swift -o build/macos/native-tests
           build/macos/native-tests
-      - name: Launch bundled WebKit and verify secure context and WebRTC
+      - name: Verify background WebRTC, native accept and streamed file reception
         run: '"build/macos/PairDrop Fork.app/Contents/MacOS/PairDropFork" --self-test'
       - name: Package one distributable
         run: |
           cd build/macos
           mkdir package
           mv "PairDrop Fork.app" INSTALL_RU.txt package/
-          ditto -c -k --sequesterRsrc --keepParent package/PairDrop\ Fork.app PairDrop-Fork-M1-Context-Menu-v1.zip
-          zip -j PairDrop-Fork-M1-Context-Menu-v1.zip package/INSTALL_RU.txt
+          ditto -c -k --sequesterRsrc --keepParent package/PairDrop\ Fork.app PairDrop-Fork-M1-Background-Fixes-v2.zip
+          zip -j PairDrop-Fork-M1-Background-Fixes-v2.zip package/INSTALL_RU.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: PairDrop-Fork-M1-Context-Menu-v1
-          path: build/macos/PairDrop-Fork-M1-Context-Menu-v1.zip
+          name: PairDrop-Fork-M1-Background-Fixes-v2
+          path: build/macos/PairDrop-Fork-M1-Background-Fixes-v2.zip
           if-no-files-found: error
           retention-days: 30
