@@ -82,7 +82,7 @@ const contextAcknowledged = new Promise(resolve => {
     };
     Events.on('files-sent', handler);
 });
-await window.PairDropHost.call('selfTestSend', {preferred: stableId});
+await window.PairDropHost.call('selfTestSend', {});
 const contextFile = await contextReceived;
 await contextAcknowledged;
 result.contextSend = contextFile.nativeSaved === true && contextFile.size === bytes.length;

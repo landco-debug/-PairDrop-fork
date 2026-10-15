@@ -247,6 +247,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     + (($0["paired"] as? Bool == true) ? " • сопряжено" : ""))
             }
             alert.accessoryView = picker
+            if selfTest {
+                guard let index = choices.firstIndex(where: { $0["id"] as? String == "ci-hidden-sender" }) else {
+                    finishSelfTest(false, "CI receiver missing from native chooser"); return
+                }
+                picker.selectItem(at: index)
+                DispatchQueue.main.async { alert.buttons[0].performClick(nil) }
+            }
             if alert.runModal() == .alertFirstButtonReturn {
                 target = choices[picker.indexOfSelectedItem]
                 if target?["paired"] as? Bool == true { UserDefaults.standard.set(target?["stableId"], forKey: "preferred-peer") }
@@ -333,10 +340,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 notify(title: "Файл сохранён", body: url.lastPathComponent, payload: ["file": url.path])
                 replyHandler(["id": id], nil); return
             case "selfTestSend":
-                guard selfTest, let stableId = data["preferred"] as? String else {
+                guard selfTest else {
                     replyHandler(nil, "Only available during self-test"); return
                 }
-                UserDefaults.standard.set(stableId, forKey: "preferred-peer")
+                UserDefaults.standard.removeObject(forKey: "preferred-peer")
+                if let stableId = data["preferred"] as? String {
+                    UserDefaults.standard.set(stableId, forKey: "preferred-peer")
+                }
                 let url = FileManager.default.temporaryDirectory.appendingPathComponent("pairdrop-ci-context.bin")
                 try Data((0..<1100123).map { UInt8($0 % 251) }).write(to: url)
                 let pasteboard = NSPasteboard.withUniqueName()
