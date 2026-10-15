@@ -2464,7 +2464,7 @@ class AboutUI {
         await this._evaluateBtnConfig(this.$privacypolicyBtn, btnConfig.privacypolicy_button);
     }
 
-    async _evaluateBtnConfig($btn, config) {
+    async _evaluateBtnConfig($btn, config = {}) {
         // if config is not set leave everything as default
         if (!Object.keys(config).length) return;
 

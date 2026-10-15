@@ -69,7 +69,7 @@ function harness() {
     for (const name of ['link-utils', 'network', 'ui']) {
         vm.runInContext(readFileSync(new URL(`../public/scripts/${name}.js`, import.meta.url), 'utf8'), context);
     }
-    const classes = vm.runInContext('({Peer, PeersManager, FileDigester, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
+    const classes = vm.runInContext('({ServerConnection, Peer, PeersManager, FileDigester, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
     async function tick(delta) {
         const target = time + delta;
         for (;;) {
@@ -243,4 +243,17 @@ test('disconnect fails every native request, clears work and cancels pending rea
     assert.equal(cancelled, 1);
     assert.equal(peer._outboundQueue.length, 0);
     assert.equal(peer._outboundActive, false);
+});
+
+test('offline signaling does not reconnect forever, and returning to the window allows a retry', async () => {
+    const h = harness(), server = Object.create(h.ServerConnection.prototype);
+    let attempts = 0;
+    server._connect = () => { attempts++; server._onDisconnect(); };
+    server._onDisconnect();
+    await h.tick(250000);
+    assert.equal(attempts, 8);
+    assert.equal(h.timers.size, 0);
+    h.context.document.hidden = false;
+    server._onVisibilityChange();
+    assert.equal(attempts, 9);
 });

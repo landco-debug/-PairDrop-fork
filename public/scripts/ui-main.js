@@ -336,6 +336,11 @@ class BackgroundCanvas {
         this.$canvas = $$('canvas');
         this.$footer = $$('footer');
 
+        if (window.PairDropHost) {
+            // A background receiver does not need a permanent 60 fps canvas worker.
+            this.$canvas.setAttribute('hidden', true);
+            return;
+        }
         this.initAnimation();
     }
 

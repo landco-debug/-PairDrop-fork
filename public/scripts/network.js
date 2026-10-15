@@ -91,6 +91,7 @@ class ServerConnection {
     }
 
     _onOpen() {
+        this._reconnectAttempts = 0;
         console.log('WS: server connected');
         Events.fire('ws-connected');
         if (this._isReconnect) Events.fire('notify-user', Localization.getTranslation("notifications.connected"));
@@ -293,12 +294,17 @@ class ServerConnection {
         setTimeout(() => {
             this._isReconnect = true;
             Events.fire('ws-disconnected');
-            this._reconnectTimer = setTimeout(() => this._connect(), 1000);
+            this._reconnectAttempts = (this._reconnectAttempts || 0) + 1;
+            // Stop after repeated failures. Reopening the app or a network change retries.
+            if (this._reconnectAttempts > 8 || this._isOffline()) return;
+            const delay = Math.min(1000 * 2 ** (this._reconnectAttempts - 1), 60000);
+            this._reconnectTimer = setTimeout(() => this._connect(), delay);
         }, 100); //delay for 100ms to prevent flickering on page reload
     }
 
     _onVisibilityChange() {
-        if (window.hiddenProperty) return;
+        if (document.hidden) return;
+        this._reconnectAttempts = 0;
         this._connect();
     }
 
