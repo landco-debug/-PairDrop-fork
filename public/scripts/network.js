@@ -339,6 +339,7 @@ class Peer {
         this._receiving = false;
         this._outboundQueue = [];
         this._outboundActive = false;
+        this._outboundGeneration = 0;
 
         // evaluate auto accept
         this._evaluateAutoAccept();
@@ -453,7 +454,7 @@ class Peer {
         try {
             const request = this._outboundQueue.shift();
             this._activeRequestId = request.requestId;
-            await this._prepareFileTransfer(request.files);
+            await this._prepareFileTransfer(request.files, this._outboundGeneration);
         } catch (error) {
             this._filesRequested = null;
             this._outboundActive = false;
@@ -463,7 +464,7 @@ class Peer {
         }
     }
 
-    async _prepareFileTransfer(files) {
+    async _prepareFileTransfer(files, generation) {
         let header = [];
         let totalSize = 0;
         let imagesOnly = true
@@ -491,6 +492,7 @@ class Peer {
 
         Events.fire('set-progress', {peerId: this._peerId, progress: 1, status: 'prepare'})
 
+        if (generation !== this._outboundGeneration || !this._outboundActive) return;
         this._filesRequested = files;
 
         this.sendJSON({type: 'request',
@@ -539,8 +541,11 @@ class Peer {
         this.sendJSON({ type: 'partition', offset: offset });
     }
 
-    _onReceivedPartitionEnd(offset) {
-        this.sendJSON({ type: 'partition-received', offset: offset });
+    _onReceivedPartitionEnd(partition) {
+        const acknowledge = () => this.sendJSON({type: 'partition-received', offset: partition.offset ?? partition});
+        // Backpressure: never acknowledge another 1 MB partition before native disk writes finish.
+        if (this._digester?._nativeTail) this._digester._nativeTail.then(acknowledge).catch(() => {});
+        else acknowledge();
     }
 
     _sendNextPartition() {
@@ -634,7 +639,7 @@ class Peer {
     _onFileHeader(header) {
         if (this._requestAccepted && this._requestAccepted.header.length) {
             this._lastProgress = 0;
-            this._digester = new FileDigester({size: header.size, name: header.name, mime: header.mime},
+            this._digester = new FileDigester({size: header.size, name: header.name, mime: header.mime, peerId: this._peerId},
                 this._requestAccepted.totalSize,
                 this._totalBytesReceived,
                 fileBlob => this._onFileReceived(fileBlob),
@@ -1191,13 +1196,24 @@ class PeersManager {
     _onPeerDisconnected(peerId) {
         const peer = this.peers[peerId];
         delete this.peers[peerId];
-        if (!peer || !peer._conn) return;
+        if (!peer) return;
         if (peer._channel) peer._channel.onclose = null;
-        peer._conn.close();
+        peer._conn?.close();
         if (peer._sending || peer._outboundActive || peer._outboundQueue.length) {
-            Events.fire('transfer-failed', {peerId});
+            for (const requestId of [peer._activeRequestId, ...peer._outboundQueue.map(request => request.requestId)]) {
+                if (requestId) Events.fire('transfer-failed', {peerId, requestId});
+            }
             Events.fire('notify-user', Localization.getTranslation("notifications.selected-peer-left"));
         }
+        for (const requestId of peer._textRequests || []) {
+            if (requestId) Events.fire('transfer-failed', {peerId, requestId});
+        }
+        peer._textRequests = [];
+        peer._outboundGeneration++;
+        peer._digester?.cancel();
+        peer._digester = null;
+        peer._requestPending = null;
+        peer._requestAccepted = null;
         peer._sending = false;
         peer._receiving = false;
         peer._outboundActive = false;
@@ -1376,8 +1392,10 @@ class FileDigester {
         }
     }
 
+    cancel() { this._cancelled = true; this._buffer = null; }
+
     unchunk(chunk) {
-        if (!this._buffer) return;
+        if (!this._buffer || this._cancelled) return;
         if (!this._nativeTail) this._buffer.push(chunk);
         this._bytesReceived += chunk.byteLength ?? chunk.size;
         this.progress = (this._totalBytesReceived + this._bytesReceived) / this._totalSize;
@@ -1388,14 +1406,19 @@ class FileDigester {
             const done = this._bytesReceived >= this._size;
             if (done) this._buffer = null;
             this._nativeTail = this._nativeTail.then(async handle => {
+                if (this._cancelled) return handle;
                 await window.PairDropHost.call('appendFile', {id: handle.id, data: encoded});
-                if (done) {
+                if (done && !this._cancelled) {
                     const saved = await window.PairDropHost.call('finishFile', {id: handle.id});
-                    this._callback({...this._nativeMeta, type: this._nativeMeta.mime, nativeSaved: true, receiptId: saved.id});
+                    if (!this._cancelled) this._callback({...this._nativeMeta, type: this._nativeMeta.mime, nativeSaved: true, receiptId: saved.id});
                 }
                 return handle;
             });
-            this._nativeTail.catch(this._onError);
+            this._nativeTail.catch(error => {
+                if (this._failed || this._cancelled) return;
+                this._failed = true;
+                this._onError(error);
+            });
             return;
         }
         if (this._bytesReceived < this._size) return;

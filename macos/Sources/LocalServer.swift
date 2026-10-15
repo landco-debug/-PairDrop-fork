@@ -46,7 +46,20 @@ final class LocalServer {
                 "type": values.contentType?.preferredMIMEType ?? "application/octet-stream"]
     }
 
-    func release(tokens: [String]) { queue.async { tokens.forEach { self.files.removeValue(forKey: $0) } } }
+    func release(tokens: [String]) {
+        queue.async {
+            let shareRoot = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Containers/site.landco.pairdrop.fork.share/Data/Library/Caches/PairDropShare")
+                .standardizedFileURL.path + "/"
+            for token in tokens {
+                guard let url = self.files.removeValue(forKey: token) else { continue }
+                let directory = url.deletingLastPathComponent().standardizedFileURL
+                if directory.path.hasPrefix(shareRoot), UUID(uuidString: directory.lastPathComponent) != nil {
+                    try? FileManager.default.removeItem(at: directory)
+                }
+            }
+        }
+    }
 
     private func readRequest(_ connection: NWConnection, buffer: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, done, error in

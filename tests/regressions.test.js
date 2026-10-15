@@ -69,7 +69,7 @@ function harness() {
     for (const name of ['link-utils', 'network', 'ui']) {
         vm.runInContext(readFileSync(new URL(`../public/scripts/${name}.js`, import.meta.url), 'utf8'), context);
     }
-    const classes = vm.runInContext('({Peer, FileDigester, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
+    const classes = vm.runInContext('({Peer, PeersManager, FileDigester, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
     async function tick(delta) {
         const target = time + delta;
         for (;;) {
@@ -194,4 +194,53 @@ test('a second receive request cannot overwrite an accepted transfer', () => {
     peer._onFilesTransferRequest({header: [{name: 'B', size: 5}], totalSize: 5});
     assert.equal(peer._requestAccepted, request);
     assert.equal(replies.at(-1).accepted, false);
+});
+
+test('native receive streams chunks, waits for disk before acknowledging a partition, and saves once', async () => {
+    const h = harness(), calls = [], replies = [];
+    h.context.arrayBufferToBase64 = data => Buffer.from(data).toString('base64');
+    let releaseWrite;
+    const disk = new Promise(resolve => { releaseWrite = resolve; });
+    h.context.window.PairDropHost = {call: async (kind, data) => {
+        calls.push({kind, data});
+        if (kind === 'beginFile') return {id: 'disk-file'};
+        if (kind === 'appendFile') { await disk; return true; }
+        if (kind === 'finishFile') return {id: 'saved-file'};
+    }};
+    const peer = new h.Peer(null, true, 'phone', 'ip', 'local');
+    peer._send = message => replies.push(JSON.parse(message));
+    peer._autoAccept = true;
+    peer._onFilesTransferRequest({header: [{name: 'native', size: 6}], totalSize: 6});
+    peer._onFileHeader({name: 'native', size: 6, mime: 'application/octet-stream'});
+    peer._onChunkReceived(new Uint8Array([1, 2, 3]).buffer);
+    peer._onReceivedPartitionEnd({offset: 3});
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(replies.some(reply => reply.type === 'partition-received'), false);
+    releaseWrite();
+    for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(replies.some(reply => reply.type === 'partition-received' && reply.offset === 3), true);
+    peer._onChunkReceived(new Uint8Array([4, 5, 6]).buffer);
+    for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+    const received = h.events.filter(e => e.name === 'files-received');
+    assert.equal(received.length, 1);
+    assert.equal(received[0].detail.files[0].nativeSaved, true);
+    assert.equal(received[0].detail.files[0].size, 6);
+    assert.equal(calls.filter(call => call.kind === 'finishFile').length, 1);
+    assert.equal(calls.filter(call => call.kind === 'appendFile').length, 2);
+});
+
+test('disconnect fails every native request, clears work and cancels pending reads', () => {
+    const h = harness(), peer = new h.Peer(null, true, 'phone', 'ip', 'local');
+    peer._outboundActive = true;
+    peer._activeRequestId = 'current';
+    peer._outboundQueue = [{requestId: 'queued', files: [file('A')]}];
+    peer._textRequests = ['text'];
+    let cancelled = 0;
+    peer._chunker = {cancel() { cancelled++; }};
+    const manager = {peers: {phone: peer}};
+    h.PeersManager.prototype._onPeerDisconnected.call(manager, 'phone');
+    assert.deepEqual(h.events.filter(e => e.name === 'transfer-failed').map(e => e.detail.requestId).sort(), ['current', 'queued', 'text']);
+    assert.equal(cancelled, 1);
+    assert.equal(peer._outboundQueue.length, 0);
+    assert.equal(peer._outboundActive, false);
 });

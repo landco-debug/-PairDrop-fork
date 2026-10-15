@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var server: LocalServer!
     private let receiveStore = ReceiveStore()
     private var peers: [[String: Any]] = []
+    private var earlyURLs: [URL] = []
     private var ready = false
     private var online = false
     private var pending: [[String: Any]] = []
@@ -76,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window.center()
         showWindow()
         webView.load(URLRequest(url: server.baseURL))
+        let urls = earlyURLs; earlyURLs = []
+        if !urls.isEmpty { application(NSApp, open: urls) }
     }
 
     private func installMenu() {
@@ -84,7 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let appMenu = NSMenu(title: "PairDrop Fork"); appItem.submenu = appMenu
         appMenu.addItem(withTitle: "Показать PairDrop", action: #selector(showWindow), keyEquivalent: "0").target = self
         appMenu.addItem(withTitle: "Отправить файлы…", action: #selector(selectFiles), keyEquivalent: "o").target = self
-        appMenu.addItem(withTitle: "Отправить текст из буфера", action: #selector(sendClipboard), keyEquivalent: "v").target = self
+        let sendTextItem = appMenu.addItem(withTitle: "Отправить текст из буфера", action: #selector(sendClipboard), keyEquivalent: "v")
+        sendTextItem.target = self
+        sendTextItem.keyEquivalentModifierMask = [.command, .shift]
         let services = NSMenuItem(title: "Службы", action: nil, keyEquivalent: "")
         services.submenu = NSMenu(title: "Службы"); appMenu.addItem(services); NSApp.servicesMenu = services.submenu
         appMenu.addItem(.separator())
@@ -135,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        guard server != nil else { earlyURLs.append(contentsOf: urls); return }
         for url in urls {
             guard url.scheme == "pairdrop-fork", url.host == "share", let id = UUID(uuidString: url.lastPathComponent) else { continue }
             let pasteboard = NSPasteboard(name: NSPasteboard.Name("PairDrop-" + id.uuidString))
@@ -189,10 +195,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 alert.informativeText = "Выберите получателя. Для сопряжённого устройства выбор запомнится."
                 alert.addButton(withTitle: "Отправить"); alert.addButton(withTitle: "Отмена")
                 let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 28))
-                peers.forEach { picker.addItem(withTitle: ($0["name"] as? String ?? "Устройство") + (($0["paired"] as? Bool == true) ? " • сопряжено" : "")) }
+                let choices = peers
+                choices.forEach { picker.addItem(withTitle: ($0["name"] as? String ?? "Устройство") + (($0["paired"] as? Bool == true) ? " • сопряжено" : "")) }
                 alert.accessoryView = picker
                 if alert.runModal() == .alertFirstButtonReturn {
-                    target = peers[picker.indexOfSelectedItem]
+                    target = choices[picker.indexOfSelectedItem]
                     if target?["paired"] as? Bool == true { UserDefaults.standard.set(target?["stableId"], forKey: "preferred-peer") }
                 }
             }
@@ -233,11 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             case "ready":
                 ready = true
                 if selfTest {
-                    webView.evaluateJavaScript("({secure: window.isSecureContext, rtc: !!window.RTCPeerConnection, bridge: !!window.PairDropBridge})") { result, error in
-                        let values = result as? [String: Bool] ?? [:]
-                        self.finishSelfTest(error == nil && values["secure"] == true && values["rtc"] == true && values["bridge"] == true,
-                                            String(describing: result ?? error as Any))
-                    }
+                    runSelfTest()
                 } else { drain() }
             case "connection":
                 online = data["online"] as? Bool ?? false
@@ -254,8 +257,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             case "sent": if let id = data["requestId"] as? String { complete(id) }
             case "failed": if let id = data["requestId"] as? String { complete(id, error: "Передача отклонена или соединение прервано") }
             case "beginFile":
-                let id = try receiveStore.begin(name: data["name"] as? String ?? "file", size: (data["size"] as? NSNumber)?.int64Value ?? -1)
+                let id = try receiveStore.begin(name: data["name"] as? String ?? "file", size: (data["size"] as? NSNumber)?.int64Value ?? -1, peerId: data["peerId"] as? String ?? "")
                 replyHandler(["id": id], nil); return
+            case "peerLeft": receiveStore.cancel(peerId: data["peerId"] as? String ?? "")
             case "appendFile":
                 try receiveStore.append(id: data["id"] as? String ?? "", base64: data["data"] as? String ?? "")
             case "finishFile":
@@ -332,6 +336,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func fail(_ message: String) {
         if selfTest { finishSelfTest(false, message); return }
         let alert = NSAlert(); alert.messageText = "PairDrop"; alert.informativeText = message; alert.runModal()
+    }
+    private func runSelfTest() {
+        window.orderOut(nil)
+        let script = """
+        const complete = await new Promise((resolve, reject) => {
+            const digester = new FileDigester({name: 'pairdrop-ci-smoke.bin', size: 5, mime: 'application/octet-stream'}, 5, 0, resolve, reject);
+            digester.unchunk(new Uint8Array([0, 1, 255]).buffer);
+            digester.unchunk(new Uint8Array([128, 42]).buffer);
+        });
+        return {secure: window.isSecureContext, rtc: !!window.RTCPeerConnection,
+            bridge: !!window.PairDropBridge, disk: complete.nativeSaved === true && complete.size === 5};
+        """
+        webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: .page) { result in
+            switch result {
+            case .success(let raw):
+                let values = raw as? [String: Bool] ?? [:]
+                let path = self.receiveStore.directory.appendingPathComponent("pairdrop-ci-smoke.bin")
+                let bytes = try? Data(contentsOf: path)
+                let service = self.responds(to: NSSelectorFromString("sendSelection:userData:error:"))
+                let success = values["secure"] == true && values["rtc"] == true && values["bridge"] == true
+                    && values["disk"] == true && bytes == Data([0, 1, 255, 128, 42]) && service
+                try? FileManager.default.removeItem(at: path)
+                self.finishSelfTest(success, "hidden window, secure origin, WebRTC, streamed disk receive, Services selector: \(values), service=\(service)")
+            case .failure(let error): self.finishSelfTest(false, error.localizedDescription)
+            }
+        }
     }
     private func finishSelfTest(_ success: Bool, _ message: String) {
         print("PairDrop self-test: \(success ? "PASS" : "FAIL") \(message)")

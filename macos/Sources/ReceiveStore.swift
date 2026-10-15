@@ -7,6 +7,7 @@ final class ReceiveStore {
         let temporary: URL
         let name: String
         let expected: Int64
+        let peerId: String
         var written: Int64 = 0
     }
     private var entries: [String: Entry] = [:]
@@ -24,7 +25,7 @@ final class ReceiveStore {
         return clean.hasPrefix(".") ? "file" + clean : clean
     }
 
-    func begin(name: String, size: Int64) throws -> String {
+    func begin(name: String, size: Int64, peerId: String = "") throws -> String {
         guard size >= 0 else { throw HostError.message("Некорректный размер файла") }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let id = UUID().uuidString
@@ -33,7 +34,7 @@ final class ReceiveStore {
             throw HostError.message("Не удалось создать файл в папке Загрузки/PairDrop")
         }
         entries[id] = Entry(handle: try FileHandle(forWritingTo: temporary), temporary: temporary,
-                            name: Self.safeName(name), expected: size)
+                            name: Self.safeName(name), expected: size, peerId: peerId)
         return id
     }
 
@@ -60,6 +61,14 @@ final class ReceiveStore {
         try FileManager.default.moveItem(at: entry.temporary, to: destination)
         entries.removeValue(forKey: id)
         return destination
+    }
+
+    func cancel(peerId: String) {
+        for (id, entry) in entries.filter({ $0.value.peerId == peerId }) {
+            try? entry.handle.close()
+            try? FileManager.default.removeItem(at: entry.temporary)
+            entries.removeValue(forKey: id)
+        }
     }
 
     func cancelAll() {

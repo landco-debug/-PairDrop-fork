@@ -6,6 +6,7 @@ class NativeBridge {
         for (const name of ['peer-connected', 'peer-disconnected', 'peer-display-name-changed']) {
             Events.on(name, () => this.publishPeers());
         }
+        Events.on('peer-disconnected', e => this.post('peerLeft', {peerId: e.detail}));
         for (const name of ['files-sent', 'text-sent', 'transfer-failed']) {
             Events.on(name, e => {
                 if (e.detail?.requestId) this.post(name === 'transfer-failed' ? 'failed' : 'sent', e.detail);
@@ -27,6 +28,7 @@ class NativeBridge {
     }
 
     async publishPeers() {
+        const revision = this._peerRevision = (this._peerRevision || 0) + 1;
         const peers = [];
         for (const [id, peer] of Object.entries(this.app.peers.peers)) {
             if (peer._channel?.readyState !== 'open') continue;
@@ -35,10 +37,11 @@ class NativeBridge {
                 ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret))),
                     b => b.toString(16).padStart(2, '0')).join('')
                 : id;
+            if (this.app.peers.peers[id] !== peer || peer._channel?.readyState !== 'open') continue;
             peers.push({id, stableId, paired: !!secret,
                 name: document.getElementById(id)?.ui?._displayName() || id});
         }
-        this.post('peers', {peers});
+        if (revision === this._peerRevision) this.post('peers', {peers});
     }
 
     async send(command) {
