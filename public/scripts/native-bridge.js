@@ -75,10 +75,10 @@ class NativeBridge {
                 names.forEach(name => Events.off(name, changed));
                 if (connectedHandler) Events.off('ws-connected', connectedHandler);
             };
-            const finish = (peers, error) => {
+            const finish = (peers, error, code = null) => {
                 if (finished) return;
                 finished = true; cleanup();
-                error ? reject(new Error(error)) : resolve(peers);
+                error ? reject(Object.assign(new Error(error), {code})) : resolve(peers);
             };
             const evaluate = async (settled = false) => {
                 const generation = ++revision;
@@ -98,9 +98,11 @@ class NativeBridge {
             };
             names.forEach(name => Events.on(name, changed));
             deadlineTimer = setTimeout(async () => {
-                const peers = await this.snapshot();
-                if (!preferred && peers.length) finish(peers);
-                else finish([], 'Сопряжённый получатель недоступен. Выбранные файлы не были отправлены другому устройству.');
+                try {
+                    const peers = await this.snapshot();
+                    if (!preferred && peers.length) finish(peers);
+                    else finish([], 'Сохранённый получатель недоступен. Выберите устройство ещё раз.', 'receiver-unavailable');
+                } catch (error) { finish([], error.message); }
             }, timeoutMs);
             // Refresh only on an explicit send. No background polling or reload of the receiver.
             this.app.server._connect();
@@ -116,6 +118,20 @@ class NativeBridge {
             }
             changed();
         });
+    }
+
+    // Expected discovery failures cross WKWebView as data, preserving their actual message.
+    // A stale saved pairing may offer a fresh chooser, but never authorize another target.
+    async prepareNativeSend(options) {
+        try {
+            return {ok: true, peers: await this.prepareToSend(options), needsSelection: false};
+        } catch (error) {
+            if (error.code === 'receiver-unavailable') {
+                const peers = await this.snapshot().catch(() => []);
+                if (peers.length) return {ok: true, peers, needsSelection: true, message: error.message};
+            }
+            return {ok: false, error: error.message || String(error)};
+        }
     }
 
     receiveRequest({request, peerId}) {

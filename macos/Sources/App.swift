@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var incoming: [String: [String: Any]] = [:]
     private var showingIncoming = false
     private var selfTestAcceptedIncoming = false
+    private var selfTestChooserCount = 0
+    private var selfTestSentCount = 0
     private let selfTest = CommandLine.arguments.contains("--self-test")
     private var preferred: String? { UserDefaults.standard.string(forKey: "preferred-peer") }
 
@@ -80,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         webView.uiDelegate = self
         window = NSWindow(contentRect: webView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "PairDrop Fork · v2"
+        window.title = "PairDrop Fork · v3"
         window.contentView = webView
         window.delegate = self
         window.isReleasedWhenClosed = false
@@ -211,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         preparingSend = true
         let command = pending.removeFirst()
         // Keep this exact command/capability while waking signaling and waiting for the phone.
-        webView.callAsyncJavaScript("return await window.PairDropBridge.prepareToSend({preferred});",
+        webView.callAsyncJavaScript("return await window.PairDropBridge.prepareNativeSend({preferred});",
                                     arguments: ["preferred": preferred as Any? ?? NSNull()], in: nil, in: .page) { [weak self] result in
             guard let self = self else { return }
             defer { self.preparingSend = false; self.drain() }
@@ -220,25 +222,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 self.release(command)
                 self.fail(Self.scriptError(error, operation: "Подготовка отправки"))
             case .success(let raw):
-                self.chooseAndSend(command, choices: raw as? [[String: Any]] ?? [])
+                guard let result = raw as? [String: Any], result["ok"] as? Bool == true else {
+                    self.release(command)
+                    self.fail((raw as? [String: Any])?["error"] as? String ?? "Не удалось подготовить отправку")
+                    return
+                }
+                self.chooseAndSend(command, choices: result["peers"] as? [[String: Any]] ?? [],
+                                   warning: result["needsSelection"] as? Bool == true ? result["message"] as? String : nil)
             }
         }
     }
 
-    private func chooseAndSend(_ payload: [String: Any], choices: [[String: Any]]) {
+    private func chooseAndSend(_ payload: [String: Any], choices: [[String: Any]], warning: String? = nil) {
         var command = payload
         guard !choices.isEmpty else { release(command); fail("Получатель недоступен"); return }
-        var target = choices.first { ($0["stableId"] as? String) == preferred }
-        if preferred != nil && target == nil {
-            release(command)
-            fail("Сохранённый телефон ещё не подключён. Другому устройству файлы не отправлены.")
-            return
-        }
+        var target = warning == nil ? choices.first { ($0["stableId"] as? String) == preferred } : nil
         if target == nil {
             showWindow()
             let alert = NSAlert()
             alert.messageText = "Отправить через PairDrop"
-            alert.informativeText = "Выберите получателя. Сопряжённое устройство запомнится. Старую вкладку pairdrop.net в Chrome можно закрыть."
+            let explanation = warning ?? (preferred == nil ? "Выберите получателя." : "Сохранённый получатель недоступен. Подтвердите нового получателя.")
+            alert.informativeText = explanation + " Сопряжённое устройство запомнится."
             alert.addButton(withTitle: "Отправить"); alert.addButton(withTitle: "Отмена")
             let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
             choices.forEach {
@@ -255,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 DispatchQueue.main.async { alert.buttons[0].performClick(nil) }
             }
             if alert.runModal() == .alertFirstButtonReturn {
+                if selfTest { selfTestChooserCount += 1 }
                 target = choices[picker.indexOfSelectedItem]
                 if target?["paired"] as? Bool == true { UserDefaults.standard.set(target?["stableId"], forKey: "preferred-peer") }
             }
@@ -279,7 +284,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         guard let tokens = active.removeValue(forKey: id) else { return }
         server.release(tokens: tokens)
         if let error = error { fail(error) }
-        else { notify(title: "Отправлено", body: "Получатель подтвердил получение.", payload: [:]) }
+        else {
+            if selfTest { selfTestSentCount += 1 }
+            notify(title: "Отправлено", body: "Получатель подтвердил получение.", payload: [:])
+        }
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
@@ -343,12 +351,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 guard selfTest else {
                     replyHandler(nil, "Only available during self-test"); return
                 }
-                UserDefaults.standard.removeObject(forKey: "preferred-peer")
+                window.orderOut(nil)
+                if data["resetPreferred"] as? Bool == true { UserDefaults.standard.removeObject(forKey: "preferred-peer") }
                 if let stableId = data["preferred"] as? String {
                     UserDefaults.standard.set(stableId, forKey: "preferred-peer")
                 }
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent("pairdrop-ci-context.bin")
+                let name = data["source"] as? String == "menu" ? "pairdrop-ci-menu.bin" : "pairdrop-ci-context.bin"
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
                 try Data((0..<1100123).map { UInt8($0 % 251) }).write(to: url)
+                if data["source"] as? String == "menu" {
+                    // Same entry point used for the NSOpenPanel's selected URLs.
+                    enqueueFiles([url])
+                    replyHandler(true, nil); return
+                }
                 let pasteboard = NSPasteboard.withUniqueName()
                 pasteboard.writeObjects([url as NSURL])
                 DispatchQueue.main.async {
@@ -393,7 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             if case .success(let accepted) = result, self?.selfTest == true, accepted as? Bool == true {
                 self?.selfTestAcceptedIncoming = true
             }
-            if case .failure(let error) = result { self?.fail(error.localizedDescription) }
+            if case .failure(let error) = result { self?.fail(Self.scriptError(error, operation: "Ответ на запрос")) }
         }
     }
 
@@ -487,14 +502,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 let values = raw as? [String: Bool] ?? [:]
                 let path = self.receiveStore.directory.appendingPathComponent("pairdrop-ci-v2.bin")
                 let bytes = try? Data(contentsOf: path)
+                let outboundPaths = ["pairdrop-ci-context.bin", "pairdrop-ci-context (1).bin", "pairdrop-ci-menu.bin"]
+                    .map { self.receiveStore.directory.appendingPathComponent($0) }
+                let expected = Data((0..<1100123).map { UInt8($0 % 251) })
+                let outboundExact = outboundPaths.allSatisfy { (try? Data(contentsOf: $0)) == expected }
                 let service = self.responds(to: NSSelectorFromString("sendSelection:userData:error:"))
                 let success = values["secure"] == true && values["rtc"] == true && values["bridge"] == true
                     && values["disk"] == true && values["contextSend"] == true
-                    && bytes == Data((0..<1100123).map { UInt8($0 % 251) }) && service
+                    && values["menuSend"] == true && values["stalePreferred"] == true
+                    && bytes == expected && outboundExact && service
+                    && self.selfTestChooserCount == 2 && self.selfTestSentCount == 3 && self.active.isEmpty
                     && self.selfTestAcceptedIncoming && NSApp.activationPolicy() == .accessory
                     && self.webView.configuration.preferences.inactiveSchedulingPolicy == .none
                 try? FileManager.default.removeItem(at: path)
-                self.finishSelfTest(success, "detached background WebRTC, native request acceptance, 1.1 MB disk receive, no Dock: \(values), service=\(service), nativeAccept=\(self.selfTestAcceptedIncoming)")
+                for path in outboundPaths { try? FileManager.default.removeItem(at: path) }
+                for name in ["pairdrop-ci-context.bin", "pairdrop-ci-menu.bin"] {
+                    try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(name))
+                }
+                self.finishSelfTest(success, "background receive + Services + menu + stale pairing, 4 x 1.1 MB: \(values), service=\(service), nativeAccept=\(self.selfTestAcceptedIncoming), outboundExact=\(outboundExact), chooser=\(self.selfTestChooserCount), sent=\(self.selfTestSentCount), active=\(self.active.count)")
             case .failure(let error): self.finishSelfTest(false, Self.scriptError(error, operation: "Self-test"))
             }
         }

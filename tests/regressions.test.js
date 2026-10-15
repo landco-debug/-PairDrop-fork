@@ -363,3 +363,45 @@ test('web transfer request notifications bind an actual click action', () => {
     assert.equal(focused, true);
     assert.equal(h.notifications[0].closed, true);
 });
+
+test('a stale saved pairing returns an explicit new choice across the native boundary without sending', async () => {
+    const h = harness(), f = nativeFixture(h, ['current-secret']);
+    f.inventory([{id: 'phone', stableId: 'new-phone-identity', paired: true}]);
+    const pending = f.bridge.prepareNativeSend({preferred: 'old-phone-identity', timeoutMs: 3000});
+    await new Promise(resolve => setImmediate(resolve));
+    await h.tick(3001);
+    const result = await pending;
+    assert.equal(result.ok, true);
+    assert.equal(result.needsSelection, true);
+    assert.equal(result.peers[0].id, 'phone');
+    assert.match(result.message, /недоступен/);
+    assert.deepEqual(f.sent, []);
+    assert.equal(h.timers.size, 0);
+});
+
+test('native discovery errors retain their actual message instead of rejecting the WebKit call', async () => {
+    const h = harness(), f = nativeFixture(h);
+    f.bridge.snapshot = async () => { throw new Error('Disconnected during discovery'); };
+    const result = await f.bridge.prepareNativeSend({preferred: 'phone'});
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'Disconnected during discovery');
+    assert.equal(h.timers.size, 0);
+    assert.deepEqual(f.sent, []);
+});
+
+test('the actual paired snapshot keeps its SHA identity after the peer session ID changes', async () => {
+    const h = harness(), f = nativeFixture(h);
+    delete f.bridge.snapshot;
+    const peer = new h.Peer(null, false, 'session-one', 'ip', 'local');
+    peer._roomIds.secret = 'shared-pairing-secret';
+    peer._channel = {readyState: 'open'};
+    f.app.peers.peers['session-one'] = peer;
+    const first = (await f.bridge.snapshot())[0];
+    assert.equal(first.paired, true);
+    assert.match(first.stableId, /^[a-f0-9]{64}$/);
+    delete f.app.peers.peers['session-one'];
+    f.app.peers.peers['session-two'] = peer;
+    const second = (await f.bridge.snapshot())[0];
+    assert.equal(second.id, 'session-two');
+    assert.equal(first.stableId, second.stableId);
+});

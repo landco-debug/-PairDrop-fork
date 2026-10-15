@@ -59,6 +59,11 @@ No infinite reconnect loops, background polling, or embedding whole large files 
 ## Validation and delivery
 
 - Run relevant Node regression tests and syntax checks; record actual results in docs.
+- Native send checks must call the real Services entry point and the file-panel enqueue path,
+  read registered file ranges and receive them over WebRTC. Test first selection, saved selection
+  and stale saved pairing. An inbound-only bridge test does not verify context-menu sending.
+- Preserve WebKit exception messages from NSError.userInfo; discovery timeouts are structured
+  outcomes. A stale target may offer a chooser, but a replacement always needs explicit consent.
 - Build macOS with GitHub Actions, arm64 only, one clearly named distributable archive.
   The archive should contain the app and concise installation instructions.
 - Do not call a source-only implementation, unrun workflow, unsigned extension or simulation

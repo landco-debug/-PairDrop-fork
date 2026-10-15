@@ -4,7 +4,7 @@
 нативным клиентом для MacBook с Apple Silicon. Исходная база: **PairDrop 1.11.2**,
 `4862ba3067be1a0f2e0d1e94861dc9200b5bfeea`. История upstream сохранена.
 
-## Mac-клиент: тестовая версия v2
+## Mac-клиент: тестовая версия v3
 
 - **Выделенный текст и ссылки:** контекстное меню → Службы → Отправить через PairDrop.
 - **Файлы:** то же действие в Finder и расширение **Поделиться → PairDrop**.
@@ -31,7 +31,7 @@ Apple Silicon. Сборка имеет локальную подпись, без
 могут не показывать Службы.
 
 Готовая сборка: [последние GitHub Actions](https://github.com/landco-debug/-PairDrop-fork/actions/workflows/build-clients.yml).
-Архив называется **PairDrop-Fork-M1-Background-Fixes-v2.zip** и содержит приложение
+Архив называется **PairDrop-Fork-M1-Context-Send-Fix-v3.zip** и содержит приложение
 и [инструкцию](macos/INSTALL_RU.txt). В разделе Artifacts GitHub дополнительно
 упаковывает его в свой ZIP.
 

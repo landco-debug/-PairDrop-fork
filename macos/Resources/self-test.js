@@ -66,26 +66,35 @@ pairDrop.peersUI._joinPeer({id: 'ci-hidden-sender', name: {displayName: 'CI Andr
 pairDrop.peersUI._onPeerConnected('ci-hidden-sender', '0123456789abcdef');
 sender._autoAccept = true;
 const stableId = (await window.PairDropBridge.snapshot()).find(peer => peer.id === 'ci-hidden-sender').stableId;
-const contextReceived = new Promise(resolve => {
-    const handler = event => {
-        if (event.detail.peerId !== 'ci-hidden-receiver') return;
-        Events.off('files-received', handler);
-        resolve(event.detail.files[0]);
-    };
-    Events.on('files-received', handler);
-});
-const contextAcknowledged = new Promise(resolve => {
-    const handler = event => {
-        if (event.detail.peerId !== 'ci-hidden-sender') return;
-        Events.off('files-sent', handler);
-        resolve();
-    };
-    Events.on('files-sent', handler);
-});
-await window.PairDropHost.call('selfTestSend', {});
-const contextFile = await contextReceived;
-await contextAcknowledged;
-result.contextSend = contextFile.nativeSaved === true && contextFile.size === bytes.length;
+for (const [source, options] of [
+    ['service', {resetPreferred: true}], // Actual first-time native chooser.
+    ['service', {preferred: 'obsolete-pairing-fingerprint'}], // Must ask, never redirect automatically.
+    ['menu', {}] // Reuse the new pairing saved by the chooser; native lazy-file path.
+]) {
+    const contextReceived = new Promise(resolve => {
+        const handler = event => {
+            if (event.detail.peerId !== 'ci-hidden-receiver') return;
+            Events.off('files-received', handler);
+            resolve(event.detail.files[0]);
+        };
+        Events.on('files-received', handler);
+    });
+    const contextAcknowledged = new Promise(resolve => {
+        const handler = event => {
+            if (event.detail.peerId !== 'ci-hidden-sender') return;
+            Events.off('files-sent', handler);
+            resolve();
+        };
+        Events.on('files-sent', handler);
+    });
+    await window.PairDropHost.call('selfTestSend', {source, ...options});
+    const contextFile = await contextReceived;
+    await contextAcknowledged;
+    if (!contextFile.nativeSaved || contextFile.size !== bytes.length) throw new Error('Native outbound transfer failed: ' + source);
+}
+result.contextSend = true;
+result.menuSend = true;
+result.stalePreferred = true;
 await PersistentStorage.deleteRoomSecret(secret);
 left.close(); right.close();
 delete pairDrop.peers.peers['ci-hidden-sender'];
