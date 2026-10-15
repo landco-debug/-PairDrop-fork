@@ -1,0 +1,21 @@
+name: Import pinned upstream
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/import-upstream.yml]
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Import PairDrop v1.11.2 and preserve its history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags https://github.com/schlagmichdoch/PairDrop.git 4862ba3067be1a0f2e0d1e94861dc9200b5bfeea
+          git merge --allow-unrelated-histories --no-edit -m "Import PairDrop v1.11.2 (4862ba3) with upstream history" FETCH_HEAD
+          git push origin HEAD:main
