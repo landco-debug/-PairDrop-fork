@@ -1,0 +1,59 @@
+# PairDrop fork — project instructions
+
+## Authorized scope
+
+This is the user's new repository: `landco-debug/-PairDrop-fork`.
+Base: upstream PairDrop v1.11.2, commit `4862ba3067be1a0f2e0d1e94861dc9200b5bfeea`.
+Keep upstream history, GPL licensing and attribution. Never commit to upstream.
+The user has authorized implementation, commits, pushes and CI builds in this repository.
+
+## User and product requirements
+
+- User communication and installation instructions: Russian, concise, candid.
+- Devices: MacBook Air M1, macOS Sequoia; Samsung Galaxy A57, Android 17 / One UI 9.
+- Open source software only. No paid services, telemetry, accounts or arbitrary file-size caps.
+- Transfer text, links, pictures and files both ways over LAN and internet using PairDrop.
+- macOS: native lightweight application, Apple Silicon build only, ordinary app in Applications.
+  No Homebrew, Xcode Command Line Tools or GitHub Desktop on the user's computer.
+- Send selected text and links through macOS Services; send files through Finder Services
+  and a Share extension. Apps with custom menus may not expose Services: document this.
+- Keep receiving while the Mac window is closed. Closing a window must not quit the receiver.
+  A background receiver consumes resources: never promise zero RAM/CPU or delivery while quit/asleep.
+  Avoid Electron and clipboard polling. Provide a way to reopen the window and quit.
+- Remember a trusted target where identity is stable; never silently send to an arbitrary sole peer.
+- Notifications containing a valid HTTP(S) URL, even with a title or source line, must open that
+  URL in the default browser when clicked. Bind payload to each notification. Never open URLs
+  on receipt, run shell content, or open untrusted URL schemes.
+- Copy text through the system clipboard on explicit action. Receiving an image/file is not
+  equivalent to universal image/file clipboard insertion; do not claim otherwise.
+- Existing Android WebView wrapper hides dialogs. Fixing web code alone does not guarantee
+  Android background discovery. Track Android changes and do not claim full Android always-on
+  delivery until built and tested on a real device. Samsung Internet PWA was rejected.
+
+## Bugs to fix and prove
+
+1. Auto-saved receive dialogs block later queue entries, including hidden Android dialogs.
+2. Delayed auto-save callbacks can target the next dialog and save it twice.
+3. Download notifications can save an already-saved batch again unintentionally.
+4. Shared send/receive busy state can strand outgoing batches during crossed transfers.
+5. Link notifications fail on messages containing a caption plus URL.
+
+Use regression tests exercising production classes/events and crossed transfers, not source
+substring assertions. Cancel stale async work, bind operations to immutable transfer IDs,
+release object URLs/listeners, and make save side effects idempotent per received batch.
+Preserve protocol compatibility with upstream unless a deliberate migration is documented.
+Do not retry completed sends automatically or drop queued work without showing failure.
+No infinite reconnect loops, background polling, or embedding whole large files in native JSON.
+
+## Validation and delivery
+
+- Run relevant Node regression tests and syntax checks; record actual results in docs.
+- Build macOS with GitHub Actions, arm64 only, one clearly named distributable archive.
+  The archive should contain the app and concise installation instructions.
+- Do not call a source-only implementation, unrun workflow, unsigned extension or simulation
+  a verified working installation. State build/signing/device-test limitations precisely.
+- Do not require Apple developer credentials or publish/deploy hosting without an actual need.
+  A fork does not change pairdrop.net; explain how clients load the patched frontend.
+- Put durable project requirements, implementation status and follow-up steps in this repo.
+- Do not spawn subagents unless the user explicitly requests delegation.
+
