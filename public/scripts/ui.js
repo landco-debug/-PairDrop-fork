@@ -66,7 +66,9 @@ class PeersUI {
     }
 
     _changePeerDisplayName(peerId, displayName) {
-        this.peers[peerId].name.displayName = displayName;
+        const peer = this.peers[peerId];
+        if (!peer) return; // A data-channel event can arrive after discovery removed the peer.
+        peer.name.displayName = displayName;
         const peerIdNode = $(peerId);
         if (peerIdNode && displayName) peerIdNode.querySelector('.name').textContent = displayName;
         this._redrawPeerRoomTypes(peerId);

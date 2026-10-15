@@ -72,7 +72,7 @@ function harness() {
     for (const name of ['link-utils', 'network', 'ui', 'native-bridge']) {
         vm.runInContext(readFileSync(new URL(`../public/scripts/${name}.js`, import.meta.url), 'utf8'), context);
     }
-    const classes = vm.runInContext('({NativeBridge, ServerConnection, Peer, PeersManager, FileDigester, PairDeviceDialog, PublicRoomDialog, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
+    const classes = vm.runInContext('({PeersUI, NativeBridge, ServerConnection, Peer, PeersManager, FileDigester, PairDeviceDialog, PublicRoomDialog, ReceiveFileDialog, Notifications, extractFirstHttpUrl})', context);
     async function tick(delta) {
         const target = time + delta;
         for (;;) {
@@ -89,6 +89,16 @@ function harness() {
 }
 
 const file = name => new File(['abc'], name, {type: 'application/octet-stream'});
+
+test('late data-channel names for removed peers cannot interrupt the native event flow', () => {
+    const h = harness();
+    const ui = Object.create(h.PeersUI.prototype);
+    ui.peers = {phone: {name: {displayName: 'Old'}, _roomIds: {}, _isSameBrowser: () => false}};
+    ui._onPeerDisplayNameChanged({detail: {peerId: 'phone', displayName: 'Galaxy'}});
+    assert.equal(ui.peers.phone.name.displayName, 'Galaxy');
+    delete ui.peers.phone;
+    assert.doesNotThrow(() => ui._onPeerDisplayNameChanged({detail: {peerId: 'phone', displayName: 'Late Galaxy'}}));
+});
 
 test('closing A cancels its timer; B saves exactly once and releases the receipt queue', async () => {
     const h = harness(), dialog = new h.ReceiveFileDialog();

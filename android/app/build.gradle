@@ -1,7 +1,8 @@
 plugins { id 'com.android.application' }
 android {
     namespace 'site.landco.pairdrop.fork'
-    compileSdk 37
+    compileSdk { version = release(37) { minorApiLevel = 0 } }
+    buildToolsVersion '37.0.0'
     defaultConfig {
         applicationId 'site.landco.pairdrop.fork'
         minSdk 35
