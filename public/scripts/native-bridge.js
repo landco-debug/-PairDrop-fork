@@ -20,6 +20,7 @@ class NativeBridge {
         }
         Events.on('text-received', e => this.post('text', {
             text: e.detail.text, url: extractFirstHttpUrl(e.detail.text),
+            peerId: e.detail.peerId, paired: !!this.app.peers.peers[e.detail.peerId]?._getPairSecret(),
             sender: document.getElementById(e.detail.peerId)?.ui?._displayName() || 'PairDrop'
         }));
         Events.on('files-transfer-request', e => this.receiveRequest(e.detail));
@@ -37,7 +38,8 @@ class NativeBridge {
     async setNativeName() {
         if (!this.app.footerUI) return;
         if (!await this.app.footerUI._getSavedDisplayName()) {
-            await this.app.footerUI._saveDisplayName('MacBook · PairDrop Fork');
+            await this.app.footerUI._saveDisplayName(window.PairDropHost.platform === 'android'
+                ? 'Galaxy · PairDrop Fork' : 'MacBook · PairDrop Fork');
         }
     }
 

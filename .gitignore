@@ -7,3 +7,8 @@ rtc_config.json
 ssl/
 
 /build/
+/android/.gradle/
+/android/**/build/
+/android/local.properties
+*.jks
+*.keystore

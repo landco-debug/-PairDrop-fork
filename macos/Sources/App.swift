@@ -2,6 +2,7 @@
 import AppKit
 import WebKit
 import UserNotifications
+import CoreServices
 
 @main
 struct PairDropMain {
@@ -16,7 +17,7 @@ struct PairDropMain {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                          WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKUIDelegate, NSToolbarDelegate,
-                         UNUserNotificationCenterDelegate {
+                         UNUserNotificationCenterDelegate, NSMenuItemValidation {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var server: LocalServer!
@@ -39,9 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var preferred: String? { UserDefaults.standard.string(forKey: "preferred-peer") }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.register(defaults: ["auto-copy-text": true])
         NSApp.setActivationPolicy(.accessory)
         installMenu()
         NSApp.servicesProvider = self
+        LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
         NSUpdateDynamicServices()
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -82,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         webView.uiDelegate = self
         window = NSWindow(contentRect: webView.frame, styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "PairDrop Fork · v3"
+        window.title = "PairDrop Fork · v4"
         window.contentView = webView
         window.delegate = self
         window.isReleasedWhenClosed = false
@@ -111,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Входящие запросы…", action: #selector(showIncomingRequests), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: "Сбросить получателя по умолчанию", action: #selector(clearPreferred), keyEquivalent: "").target = self
+        appMenu.addItem(withTitle: "Копировать текст от сопряжённых устройств", action: #selector(toggleAutoCopy), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: "Значок в строке меню", action: #selector(toggleStatusItem), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Закрыть окно", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -161,6 +165,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         NSApp.activate(ignoringOtherApps: true)
     }
     @objc private func clearPreferred() { UserDefaults.standard.removeObject(forKey: "preferred-peer") }
+    @objc private func toggleAutoCopy() {
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "auto-copy-text"), forKey: "auto-copy-text")
+    }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleAutoCopy) {
+            menuItem.state = UserDefaults.standard.bool(forKey: "auto-copy-text") ? .on : .off
+        }
+        return true
+    }
     @objc private func selectFiles() {
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
         if panel.runModal() == .OK { enqueueFiles(panel.urls) }
@@ -173,7 +186,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc func sendSelection(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
             enqueueFiles(urls)
-        } else if let text = pasteboard.string(forType: .string), !text.isEmpty { enqueue(["text": text]) }
+        } else if let text = pasteboard.string(forType: .string)
+                    ?? pasteboard.string(forType: NSPasteboard.PasteboardType("NSStringPboardType")), !text.isEmpty { enqueue(["text": text]) }
         else { error.pointee = "Не получены текст или файлы" }
     }
 
@@ -328,9 +342,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 if let id = data["id"] as? String { expireIncoming(id) }
             case "text":
                 let text = data["text"] as? String ?? ""
+                let copied = data["paired"] as? Bool == true && UserDefaults.standard.bool(forKey: "auto-copy-text")
+                if copied { copy(text) }
                 var payload: [String: Any] = ["text": text]
                 if let raw = data["url"] as? String, Self.webURL(raw) != nil { payload["url"] = raw }
-                notify(title: payload["url"] == nil ? "Получен текст" : "Получена ссылка", body: text, payload: payload)
+                notify(title: copied ? "Текст скопирован — можно вставлять" : (payload["url"] == nil ? "Получен текст" : "Получена ссылка"), body: text, payload: payload)
             case "sent": if let id = data["requestId"] as? String { complete(id) }
             case "failed": if let id = data["requestId"] as? String { complete(id, error: "Передача отклонена или соединение прервано") }
             case "beginFile":
@@ -347,6 +363,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 let url = try receiveStore.finish(id: id)
                 notify(title: "Файл сохранён", body: url.lastPathComponent, payload: ["file": url.path])
                 replyHandler(["id": id], nil); return
+            case "selfTestClipboard":
+                guard selfTest else { replyHandler(nil, "Test only"); return }
+                if let enabled = data["enabled"] as? Bool { UserDefaults.standard.set(enabled, forKey: "auto-copy-text") }
+                replyHandler(NSPasteboard.general.string(forType: .string) == data["expected"] as? String, nil); return
+            case "selfTestSelection":
+                guard selfTest, let text = data["text"] as? String else { replyHandler(nil, "Test only"); return }
+                let pasteboard = NSPasteboard.withUniqueName()
+                pasteboard.declareTypes([NSPasteboard.PasteboardType("NSStringPboardType")], owner: nil)
+                pasteboard.setString(text, forType: NSPasteboard.PasteboardType("NSStringPboardType"))
+                DispatchQueue.main.async {
+                    let performed = NSPerformService("Отправить текст через PairDrop", pasteboard)
+                    pasteboard.releaseGlobally()
+                    if !performed { self.finishSelfTest(false, "System text Service was not discoverable") }
+                }
             case "selfTestSend":
                 guard selfTest else {
                     replyHandler(nil, "Only available during self-test"); return
@@ -490,6 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return "\(operation): \(detail)\(source.isEmpty ? "" : " (\(source):\(line))")"
     }
     private func runSelfTest() {
+        copy("clipboard-ci-seed")
         window.orderOut(nil)
         window.contentView = NSView() // Exercise WKPreferences when detached, not just momentarily hidden.
         guard let url = Bundle.main.url(forResource: "self-test", withExtension: "js"),
@@ -510,8 +541,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 let success = values["secure"] == true && values["rtc"] == true && values["bridge"] == true
                     && values["disk"] == true && values["contextSend"] == true
                     && values["menuSend"] == true && values["stalePreferred"] == true
+                    && values["clipboardBothWays"] == true && values["clipboardPolicy"] == true
                     && bytes == expected && outboundExact && service
-                    && self.selfTestChooserCount == 2 && self.selfTestSentCount == 3 && self.active.isEmpty
+                    && self.selfTestChooserCount == 2 && self.selfTestSentCount == 4 && self.active.isEmpty
                     && self.selfTestAcceptedIncoming && NSApp.activationPolicy() == .accessory
                     && self.webView.configuration.preferences.inactiveSchedulingPolicy == .none
                 try? FileManager.default.removeItem(at: path)

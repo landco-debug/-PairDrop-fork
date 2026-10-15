@@ -11,7 +11,7 @@ cp -R public "$app/Contents/Resources/Web"
 cp LICENSE "$app/Contents/Resources/LICENSE.txt"
 cp macos/Resources/self-test.js "$app/Contents/Resources/self-test.js"
 xcrun swiftc -swift-version 5 -O -target arm64-apple-macos14.0 \
-    -framework AppKit -framework WebKit -framework Network -framework UserNotifications -framework UniformTypeIdentifiers \
+    -framework AppKit -framework WebKit -framework Network -framework UserNotifications -framework UniformTypeIdentifiers -framework CoreServices \
     macos/Sources/*.swift -o "$app/Contents/MacOS/PairDropFork"
 xcrun swiftc -swift-version 5 -O -target arm64-apple-macos14.0 -parse-as-library -emit-executable \
     -module-name PairDropShare -framework AppKit -framework UniformTypeIdentifiers -Xlinker -e -Xlinker _NSExtensionMain \

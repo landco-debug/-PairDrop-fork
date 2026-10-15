@@ -35,7 +35,9 @@ The user has authorized implementation, commits, pushes and CI builds in this re
 - Notifications containing a valid HTTP(S) URL, even with a title or source line, must open that
   URL in the default browser when clicked. Bind payload to each notification. Never open URLs
   on receipt, run shell content, or open untrusted URL schemes.
-- Copy text through the system clipboard on explicit action. Receiving an image/file is not
+- The user now authorizes two-way text delivery straight to the receiver's clipboard after
+  an explicit selection/send on the sender. Auto-copy only paired peers by default, with an
+  opt-out; never monitor/retransmit unrelated clipboard changes. Receiving an image/file is not
   equivalent to universal image/file clipboard insertion; do not claim otherwise.
 - Existing Android WebView wrapper hides dialogs. Fixing web code alone does not guarantee
   Android background discovery. Track Android changes and do not claim full Android always-on
@@ -71,5 +73,8 @@ No infinite reconnect loops, background polling, or embedding whole large files 
 - Do not require Apple developer credentials or publish/deploy hosting without an actual need.
   A fork does not change pairdrop.net; explain how clients load the patched frontend.
 - Put durable project requirements, implementation status and follow-up steps in this repo.
+- Target devices are specifically macOS Sequoia 15 and Android 17 / One UI 9.0. Android API 37
+  requires ACCESS_LOCAL_NETWORK runtime permission. Never claim A57 battery measurements
+  from emulator tests; keep a foreground receiver stoppable and its notification visible.
 - Do not spawn subagents unless the user explicitly requests delegation.
 

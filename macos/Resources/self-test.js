@@ -57,6 +57,15 @@ await acknowledged;
 const result = {secure: window.isSecureContext, rtc: true, bridge: !!window.PairDropBridge,
     disk: complete.nativeSaved === true && complete.size === bytes.length,
     hidden: document.hidden, requestAccepted: !receiver._requestPending};
+const sendRemoteText = async (text, requestId) => {
+    const ack = new Promise(resolve => {
+        const handler = event => { if (event.detail.requestId === requestId) { Events.off('text-sent', handler); resolve(); } };
+        Events.on('text-sent', handler);
+    });
+    sender.sendText(text, requestId); await ack;
+};
+await sendRemoteText('unpaired-must-not-replace', 'ci-unpaired-text');
+if (!await window.PairDropHost.call('selfTestClipboard', {expected: 'clipboard-ci-seed'})) throw new Error('Unpaired peer replaced clipboard');
 // Exercise the actual Swift Services -> registered file -> prepare -> lazy HTTP range -> RTC path.
 const secret = 'ci-context-secret-'.padEnd(256, 'x');
 await PersistentStorage.addRoomSecret(secret, 'CI Android', 'Android');
@@ -95,6 +104,23 @@ for (const [source, options] of [
 result.contextSend = true;
 result.menuSend = true;
 result.stalePreferred = true;
+const unicodeText = 'Android → Mac\nПривет, мир 👋\nhttps://example.com/?q=тест';
+await sendRemoteText(unicodeText, 'ci-paired-text');
+if (!await window.PairDropHost.call('selfTestClipboard', {expected: unicodeText, enabled: false})) throw new Error('Incoming paired text missing from system clipboard');
+await sendRemoteText('disabled-must-not-replace', 'ci-disabled-text');
+if (!await window.PairDropHost.call('selfTestClipboard', {expected: unicodeText, enabled: true})) throw new Error('Disabled auto-copy replaced clipboard');
+const selectedText = 'Mac → Android\nВыделенный текст «🙂»\n  spaces preserved  ';
+const selectionReceived = new Promise(resolve => {
+    const handler = event => {
+        if (event.detail.peerId === 'ci-hidden-receiver') { Events.off('text-received', handler); resolve(event.detail.text); }
+    };
+    Events.on('text-received', handler);
+});
+await window.PairDropHost.call('selfTestSelection', {text: selectedText});
+if (await selectionReceived !== selectedText) throw new Error('System Service changed selected text');
+if (!await window.PairDropHost.call('selfTestClipboard', {expected: unicodeText})) throw new Error('Sending a selection replaced the local clipboard');
+result.clipboardBothWays = true;
+result.clipboardPolicy = true;
 await PersistentStorage.deleteRoomSecret(secret);
 left.close(); right.close();
 delete pairDrop.peers.peers['ci-hidden-sender'];

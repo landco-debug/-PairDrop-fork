@@ -405,3 +405,17 @@ test('the actual paired snapshot keeps its SHA identity after the peer session I
     assert.equal(second.id, 'session-two');
     assert.equal(first.stableId, second.stableId);
 });
+
+test('native text reception reports pairing from the actual peer and never sends clipboard changes back', () => {
+    const h = harness(), f = nativeFixture(h);
+    const peer = new h.Peer(null, false, 'phone', 'ip', 'local');
+    f.app.peers.peers.phone = peer;
+    const text = 'Юникод 🙂\n  two spaces  \nhttps://example.com/';
+    h.context.Events.fire('text-received', {peerId: 'phone', text});
+    assert.equal(f.hostCalls.at(-1).data.paired, false);
+    peer._roomIds.secret = 'paired-secret';
+    h.context.Events.fire('text-received', {peerId: 'phone', text});
+    assert.equal(f.hostCalls.at(-1).data.paired, true);
+    assert.equal(f.hostCalls.at(-1).data.text, text);
+    assert.deepEqual(f.sent, []);
+});
