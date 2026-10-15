@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var selfTestAcceptedIncoming = false
     private var selfTestChooserCount = 0
     private var selfTestSentCount = 0
+    private var selfTestSelectionPasteboard: NSPasteboard?
     private let selfTest = CommandLine.arguments.contains("--self-test")
     private var preferred: String? { UserDefaults.standard.string(forKey: "preferred-peer") }
 
@@ -385,11 +386,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 let pasteboard = NSPasteboard.withUniqueName()
                 pasteboard.declareTypes([NSPasteboard.PasteboardType("NSStringPboardType")], owner: nil)
                 pasteboard.setString(text, forType: NSPasteboard.PasteboardType("NSStringPboardType"))
+                selfTestSelectionPasteboard = pasteboard
                 DispatchQueue.main.async {
                     print("Invoking registered text Service"); fflush(stdout)
                     let performed = NSPerformService("Отправить текст через PairDrop", pasteboard)
                     print("Registered text Service result: \(performed)"); fflush(stdout)
-                    pasteboard.releaseGlobally()
                     if !performed { self.finishSelfTest(false, "System text Service was not discoverable") }
                 }
             case "selfTestSend":
@@ -572,6 +573,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
     }
     private func finishSelfTest(_ success: Bool, _ message: String) {
+        selfTestSelectionPasteboard?.releaseGlobally()
+        selfTestSelectionPasteboard = nil
         print("PairDrop self-test: \(success ? "PASS" : "FAIL") \(message)")
         fflush(stdout)
         exit(success ? 0 : 1)

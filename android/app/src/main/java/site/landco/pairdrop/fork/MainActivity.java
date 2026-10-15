@@ -46,7 +46,7 @@ public final class MainActivity extends Activity {
             popup.setOnMenuItemClickListener(item -> {
                 if (item.getItemId()==1) getSharedPreferences("receiver",0).edit().putBoolean("autoCopy",!auto).apply();
                 if (item.getItemId()==2) getSharedPreferences("receiver",0).edit().remove("preferred").apply();
-                if (item.getItemId()==3) { stopService(new Intent(this,ReceiverService.class)); finish(); }
+                if (item.getItemId()==3) { if(service!=null)service.stopReceiver();else stopService(new Intent(this,ReceiverService.class));finish(); }
                 if (item.getItemId()==4) configureScreenOff();
                 return true;
             }); popup.show();

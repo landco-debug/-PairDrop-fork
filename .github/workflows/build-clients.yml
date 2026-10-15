@@ -77,7 +77,11 @@ jobs:
           cmdline-tools-version: '16111833'
           packages: platform-tools
       - name: Install Android 17 SDK
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+        run: |
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+          # The emulator action prepends cmdline-tools/latest, which is stale on runners.
+          mv "$ANDROID_HOME/cmdline-tools/latest" "$ANDROID_HOME/cmdline-tools/runner-preinstalled"
+          ln -s "$ANDROID_HOME/cmdline-tools/16111833" "$ANDROID_HOME/cmdline-tools/latest"
       - name: Build clipboard client and instrumentation
         run: gradle -p android :app:assembleDebug :app:assembleRelease :app:assembleDebugAndroidTest --stacktrace
       - name: Enable KVM
@@ -93,8 +97,9 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disk-size: 6G
+          ram-size: 4096M
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot -partition-size 6144
+          emulator-options: -no-window -gpu software -noaudio -no-boot-anim -camera-back none -no-snapshot -partition-size 6144
           script: bash android/test-device.sh
       - uses: actions/upload-artifact@v4
         with:

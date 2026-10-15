@@ -76,7 +76,11 @@ public final class ClipboardInstrumentation extends Instrumentation {
             Activity finalProbe=open();waitForIdleSync();Thread.sleep(700);
             check(incoming.equals(clipboard()),"Sending selection or unpaired text replaced local clipboard");
             runOnMainSync(()->service.runDebugScript("window.ClipboardFixture.close();"));
-            result.putString("stream","CLIPBOARD_INTEGRATION_PASS: API="+Build.VERSION.SDK_INT+", real WebRTC, background OS clipboard, PROCESS_TEXT, Unicode, unpaired/disabled policy, no clipboard echo\n");
+            runOnMainSync(()-> { finalProbe.moveTaskToBack(true);getTargetContext().startService(new Intent(getTargetContext(),ReceiverService.class).setAction("stop")); });
+            long stopped=System.nanoTime()+TimeUnit.SECONDS.toNanos(15);
+            while(ReceiverService.debugInstance!=null && System.nanoTime()<stopped)Thread.sleep(100);
+            check(ReceiverService.debugInstance==null,"Stop action left a hidden bound receiver running");
+            result.putString("stream","CLIPBOARD_INTEGRATION_PASS: API="+Build.VERSION.SDK_INT+", real WebRTC, background OS clipboard, PROCESS_TEXT, Unicode, unpaired/disabled policy, no clipboard echo, explicit stop\n");
             finish(Activity.RESULT_OK,result);
         } catch(Throwable error) {
             StringWriter trace=new StringWriter();error.printStackTrace(new PrintWriter(trace));

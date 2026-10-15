@@ -24,6 +24,7 @@ public final class ReceiverService extends Service {
     private final ArrayDeque<JSONObject> pending=new ArrayDeque<>();
     private final Map<String,JSONObject> active=new LinkedHashMap<>(), requests=new LinkedHashMap<>();
     private WeakReference<MainActivity> activity=new WeakReference<>(null);
+    private final Set<MainActivity> clients=Collections.newSetFromMap(new WeakHashMap<>());
     private SharedPreferences prefs;
     private NotificationManager notifications;
     private ReceiveStore store;
@@ -92,7 +93,7 @@ public final class ReceiverService extends Service {
                 for(JSONObject command:active.values()) error("Соединение перезапущено; повторите незавершённую отправку вручную");
                 active.clear();if(preparing!=null) { error("Подготовка отправки прервана");preparing=null;choices=null; }
                 if(++rendererRestarts<=3) main.postDelayed(()-> { if(!destroyed) { createWebView();MainActivity a=host();if(a!=null)a.showReceiver(web); } },1000L<<rendererRestarts);
-                else { error("Приёмник остановлен после ошибок WebView. Откройте приложение заново.");MainActivity a=host();if(a!=null)a.finish();stopSelf(); }
+                else { error("Приёмник остановлен после ошибок WebView. Откройте приложение заново.");stopReceiver(); }
                 return true;
             }
         });
@@ -189,10 +190,12 @@ public final class ReceiverService extends Service {
     }
     private void failed(String id,String message) { if(active.remove(id)!=null)error(message); }
     private MainActivity host() { MainActivity a=activity.get();return a!=null && a.visible && !a.isFinishing() && !a.isDestroyed()?a:null; }
-    void attach(MainActivity a) { activity=new WeakReference<>(a);a.showReceiver(web);showChooser();showIncoming(); }
+    void attach(MainActivity a) { clients.add(a);activity=new WeakReference<>(a);a.showReceiver(web);showChooser();showIncoming(); }
     void detach(MainActivity a) {
+        clients.remove(a);
         if(activity.get()==a) { activity.clear();hideDialogs();if(web.getParent() instanceof android.view.ViewGroup)((android.view.ViewGroup)web.getParent()).removeView(web); }
     }
+    void stopReceiver() { for(MainActivity a:List.copyOf(clients))a.finish();stopSelf(); }
     void hideDialogs() { if(chooserDialog!=null)chooserDialog.dismiss();if(incomingDialog!=null)incomingDialog.dismiss(); }
     void showChooser() {
         if(choices==null || preparing==null || chooserVisible)return;
@@ -249,7 +252,7 @@ public final class ReceiverService extends Service {
     @Override public IBinder onBind(Intent intent) { return binder; }
     @Override public int onStartCommand(Intent intent,int flags,int id) {
         if(intent!=null) {
-            if("stop".equals(intent.getAction())) { MainActivity a=host();if(a!=null)a.finish();stopSelf(); }
+            if("stop".equals(intent.getAction()))stopReceiver();
             if("accept".equals(intent.getAction()))respond(intent.getStringExtra("request"),true);
             if("decline".equals(intent.getAction()))respond(intent.getStringExtra("request"),false);
             if("copy".equals(intent.getAction()))copy(intent.getStringExtra("text"));
