@@ -26,12 +26,18 @@ public final class ClipboardInstrumentation extends Instrumentation {
         }throw new AssertionError("Timed out: "+event+" / "+text);
     }
     private Activity open() throws Exception {
-        Activity activity=startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        ActivityMonitor monitor=new ActivityMonitor(MainActivity.class.getName(),null,false);
+        addMonitor(monitor);
+        runOnMainSync(()->getTargetContext().startActivity(new Intent(getTargetContext(),MainActivity.class)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_MULTIPLE_TASK)));
+        Activity activity=monitor.waitForActivityWithTimeout(20000);
+        removeMonitor(monitor);
+        check(activity!=null,"Clipboard probe Activity did not launch");
         AtomicReference<Boolean> focused=new AtomicReference<>(false);
         long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(20);
         while(System.nanoTime()<deadline) {
             runOnMainSync(()->focused.set(activity.hasWindowFocus()));
-            if(focused.get())return activity;
+            if(focused.get()) { trace("probe-focused");return activity; }
             Thread.sleep(100);
         }
         throw new AssertionError("Clipboard probe did not receive window focus");
@@ -61,7 +67,7 @@ public final class ClipboardInstrumentation extends Instrumentation {
             // Test-driver privilege for reopening probe windows; clipboard access stays ordinary.
             getUiAutomation().adoptShellPermissionIdentity("android.permission.START_ACTIVITIES_FROM_BACKGROUND");
             trace("open-main");
-            Activity activity=open();waitForIdleSync();
+            Activity activity=open();
             long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(75);
             while(System.nanoTime()<deadline) {
                 service=ReceiverService.debugInstance;
@@ -85,7 +91,7 @@ public final class ClipboardInstrumentation extends Instrumentation {
             check(receipt.optBoolean("copied"),"Paired incoming text was not copied");
             check(receipt.optBoolean("background"),"Incoming text was tested with a visible Activity");
             trace("background-copy-reported");
-            Activity probe=open();waitForIdleSync();Thread.sleep(700);
+            Activity probe=open();
             check(incoming.equals(clipboard()),"OS clipboard does not contain incoming text");
             trace("os-clipboard-verified");
             background(probe);
@@ -106,7 +112,7 @@ public final class ClipboardInstrumentation extends Instrumentation {
             check(selected.equals(await("selectionReceived",selected).getString("text")),"Selected text changed");
             await("sent",selected);
             trace("selection-delivered");
-            Activity finalProbe=open();waitForIdleSync();Thread.sleep(700);
+            Activity finalProbe=open();
             check(incoming.equals(clipboard()),"Sending selection or unpaired text replaced local clipboard");
             runOnMainSync(()->service.runDebugScript("window.ClipboardFixture.close();"));
             background(finalProbe);
