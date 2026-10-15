@@ -24,8 +24,16 @@ public final class ClipboardInstrumentation extends Instrumentation {
             if(value.optString("event").equals(event) && (text==null || text.equals(value.optString("text"))))return value;
         }throw new AssertionError("Timed out: "+event+" / "+text);
     }
-    private Activity open() {
-        return startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+    private Activity open() throws Exception {
+        Activity activity=startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        AtomicReference<Boolean> focused=new AtomicReference<>(false);
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(20);
+        while(System.nanoTime()<deadline) {
+            runOnMainSync(()->focused.set(activity.hasWindowFocus()));
+            if(focused.get())return activity;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Clipboard probe did not receive window focus");
     }
     private String clipboard() throws Exception {
         AtomicReference<String> value=new AtomicReference<>();
@@ -34,6 +42,17 @@ public final class ClipboardInstrumentation extends Instrumentation {
     }
     private void sendRemote(String text,boolean paired) {
         runOnMainSync(()->service.runDebugScript("window.ClipboardFixture.send("+JSONObject.quote(text)+","+paired+");"));
+    }
+    private void background(Activity activity) throws Exception {
+        runOnMainSync(()->activity.moveTaskToBack(true));
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(15);
+        AtomicReference<Boolean> hidden=new AtomicReference<>(false);
+        while(System.nanoTime()<deadline) {
+            runOnMainSync(()->hidden.set(!((MainActivity)activity).visible));
+            if(hidden.get())return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Activity did not reach onStop before background test");
     }
     @Override public void onStart() {
         Bundle result=new Bundle();
@@ -53,14 +72,14 @@ public final class ClipboardInstrumentation extends Instrumentation {
             JSONObject initialized=await("fixtureReady",null);
             runOnMainSync(()->service.setPreferredForTest(initialized.optString("stableId")));
             runOnMainSync(()->((ClipboardManager)getTargetContext().getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("seed","clipboard-seed")));
-            runOnMainSync(()->activity.moveTaskToBack(true));Thread.sleep(700);
+            background(activity);
             String incoming="Mac → Android\nКириллица 👋\n  spaces  \nhttps://example.com/?q=тест";
             sendRemote(incoming,true);JSONObject receipt=await("received",incoming);
             check(receipt.optBoolean("copied"),"Paired incoming text was not copied");
             check(receipt.optBoolean("background"),"Incoming text was tested with a visible Activity");
             Activity probe=open();waitForIdleSync();Thread.sleep(700);
             check(incoming.equals(clipboard()),"OS clipboard does not contain incoming text");
-            runOnMainSync(()->probe.moveTaskToBack(true));Thread.sleep(500);
+            background(probe);
             sendRemote("unpaired-must-not-copy",false);
             check(!await("received","unpaired-must-not-copy").optBoolean("copied"),"Unpaired peer auto-copied");
             runOnMainSync(()->getTargetContext().getSharedPreferences("receiver",0).edit().putBoolean("autoCopy",false).commit());
@@ -68,6 +87,8 @@ public final class ClipboardInstrumentation extends Instrumentation {
             check(!await("received","disabled-must-not-copy").optBoolean("copied"),"Disabled auto-copy ran");
             runOnMainSync(()->getTargetContext().getSharedPreferences("receiver",0).edit().putBoolean("autoCopy",true).commit());
             String selected="Android → Mac\nВыделение 🙂\n  keep trailing spaces  ";
+            Intent menu=new Intent(Intent.ACTION_PROCESS_TEXT).setType("text/plain").setPackage(getTargetContext().getPackageName());
+            check(getTargetContext().getPackageManager().resolveActivity(menu,0)!=null,"Selected-text handler is missing from the system menu registry");
             Intent selection=new Intent(Intent.ACTION_PROCESS_TEXT).setClass(getTargetContext(),SendTextActivity.class).setType("text/plain")
                 .putExtra(Intent.EXTRA_PROCESS_TEXT,selected).putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY,true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivitySync(selection);
@@ -76,7 +97,8 @@ public final class ClipboardInstrumentation extends Instrumentation {
             Activity finalProbe=open();waitForIdleSync();Thread.sleep(700);
             check(incoming.equals(clipboard()),"Sending selection or unpaired text replaced local clipboard");
             runOnMainSync(()->service.runDebugScript("window.ClipboardFixture.close();"));
-            runOnMainSync(()-> { finalProbe.moveTaskToBack(true);getTargetContext().startService(new Intent(getTargetContext(),ReceiverService.class).setAction("stop")); });
+            background(finalProbe);
+            runOnMainSync(()->getTargetContext().startService(new Intent(getTargetContext(),ReceiverService.class).setAction("stop")));
             long stopped=System.nanoTime()+TimeUnit.SECONDS.toNanos(15);
             while(ReceiverService.debugInstance!=null && System.nanoTime()<stopped)Thread.sleep(100);
             check(ReceiverService.debugInstance==null,"Stop action left a hidden bound receiver running");

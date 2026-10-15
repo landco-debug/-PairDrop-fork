@@ -8,4 +8,4 @@ adb shell pm grant site.landco.pairdrop.fork android.permission.ACCESS_LOCAL_NET
 adb shell input keyevent KEYCODE_WAKEUP
 adb shell wm dismiss-keyguard
 adb shell am instrument -w site.landco.pairdrop.fork.test/site.landco.pairdrop.fork.ClipboardInstrumentation | tee android/instrumentation.log
-rg 'CLIPBOARD_INTEGRATION_PASS: API=37' android/instrumentation.log
+grep -F 'CLIPBOARD_INTEGRATION_PASS: API=37' android/instrumentation.log
