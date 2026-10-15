@@ -15,6 +15,7 @@ public final class ClipboardInstrumentation extends Instrumentation {
     private final BlockingQueue<JSONObject> events=new LinkedBlockingQueue<>();
     private ReceiverService service;
     @Override public void onCreate(Bundle arguments) { super.onCreate(arguments);start(); }
+    private void trace(String stage) { Bundle status=new Bundle();status.putString("stream","CLIPBOARD_STAGE: "+stage+"\n");sendStatus(0,status); }
     private void check(boolean value,String message) { if(!value)throw new AssertionError(message); }
     private JSONObject await(String event,String text) throws Exception {
         long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(35);
@@ -57,6 +58,9 @@ public final class ClipboardInstrumentation extends Instrumentation {
     @Override public void onStart() {
         Bundle result=new Bundle();
         try {
+            // Test-driver privilege for reopening probe windows; clipboard access stays ordinary.
+            getUiAutomation().adoptShellPermissionIdentity("android.permission.START_ACTIVITIES_FROM_BACKGROUND");
+            trace("open-main");
             Activity activity=open();waitForIdleSync();
             long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(75);
             while(System.nanoTime()<deadline) {
@@ -65,20 +69,25 @@ public final class ClipboardInstrumentation extends Instrumentation {
                 Thread.sleep(150);
             }
             check(service!=null && service.isReadyForTest(),"Frontend did not become ready");
+            trace("frontend-ready");
             runOnMainSync(()->service.debugEvents=events::offer);
             String fixture;
             try(InputStream in=getContext().getAssets().open("native-fixture.js")) { fixture=new String(in.readAllBytes(),StandardCharsets.UTF_8); }
             String script=fixture;runOnMainSync(()->service.runDebugScript(script));
             JSONObject initialized=await("fixtureReady",null);
+            trace("rtc-ready");
             runOnMainSync(()->service.setPreferredForTest(initialized.optString("stableId")));
             runOnMainSync(()->((ClipboardManager)getTargetContext().getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("seed","clipboard-seed")));
             background(activity);
+            trace("window-stopped");
             String incoming="Mac → Android\nКириллица 👋\n  spaces  \nhttps://example.com/?q=тест";
             sendRemote(incoming,true);JSONObject receipt=await("received",incoming);
             check(receipt.optBoolean("copied"),"Paired incoming text was not copied");
             check(receipt.optBoolean("background"),"Incoming text was tested with a visible Activity");
+            trace("background-copy-reported");
             Activity probe=open();waitForIdleSync();Thread.sleep(700);
             check(incoming.equals(clipboard()),"OS clipboard does not contain incoming text");
+            trace("os-clipboard-verified");
             background(probe);
             sendRemote("unpaired-must-not-copy",false);
             check(!await("received","unpaired-must-not-copy").optBoolean("copied"),"Unpaired peer auto-copied");
@@ -86,14 +95,17 @@ public final class ClipboardInstrumentation extends Instrumentation {
             sendRemote("disabled-must-not-copy",true);
             check(!await("received","disabled-must-not-copy").optBoolean("copied"),"Disabled auto-copy ran");
             runOnMainSync(()->getTargetContext().getSharedPreferences("receiver",0).edit().putBoolean("autoCopy",true).commit());
+            trace("clipboard-policy-verified");
             String selected="Android → Mac\nВыделение 🙂\n  keep trailing spaces  ";
             Intent menu=new Intent(Intent.ACTION_PROCESS_TEXT).setType("text/plain").setPackage(getTargetContext().getPackageName());
             check(getTargetContext().getPackageManager().resolveActivity(menu,0)!=null,"Selected-text handler is missing from the system menu registry");
             Intent selection=new Intent(Intent.ACTION_PROCESS_TEXT).setClass(getTargetContext(),SendTextActivity.class).setType("text/plain")
                 .putExtra(Intent.EXTRA_PROCESS_TEXT,selected).putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY,true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivitySync(selection);
+            open(); // The user invokes a selection action from a visible source application.
+            runOnMainSync(()->getTargetContext().startActivity(selection));
             check(selected.equals(await("selectionReceived",selected).getString("text")),"Selected text changed");
             await("sent",selected);
+            trace("selection-delivered");
             Activity finalProbe=open();waitForIdleSync();Thread.sleep(700);
             check(incoming.equals(clipboard()),"Sending selection or unpaired text replaced local clipboard");
             runOnMainSync(()->service.runDebugScript("window.ClipboardFixture.close();"));
@@ -102,9 +114,11 @@ public final class ClipboardInstrumentation extends Instrumentation {
             long stopped=System.nanoTime()+TimeUnit.SECONDS.toNanos(15);
             while(ReceiverService.debugInstance!=null && System.nanoTime()<stopped)Thread.sleep(100);
             check(ReceiverService.debugInstance==null,"Stop action left a hidden bound receiver running");
+            getUiAutomation().dropShellPermissionIdentity();
             result.putString("stream","CLIPBOARD_INTEGRATION_PASS: API="+Build.VERSION.SDK_INT+", real WebRTC, background OS clipboard, PROCESS_TEXT, Unicode, unpaired/disabled policy, no clipboard echo, explicit stop\n");
             finish(Activity.RESULT_OK,result);
         } catch(Throwable error) {
+            try { getUiAutomation().dropShellPermissionIdentity(); } catch(Exception ignored) {}
             StringWriter trace=new StringWriter();error.printStackTrace(new PrintWriter(trace));
             result.putString("stream","CLIPBOARD_INTEGRATION_FAIL: "+trace);finish(Activity.RESULT_CANCELED,result);
         }

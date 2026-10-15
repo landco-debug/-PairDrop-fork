@@ -7,5 +7,5 @@ adb shell pm grant site.landco.pairdrop.fork android.permission.POST_NOTIFICATIO
 adb shell pm grant site.landco.pairdrop.fork android.permission.ACCESS_LOCAL_NETWORK
 adb shell input keyevent KEYCODE_WAKEUP
 adb shell wm dismiss-keyguard
-adb shell am instrument -w site.landco.pairdrop.fork.test/site.landco.pairdrop.fork.ClipboardInstrumentation | tee android/instrumentation.log
+timeout 240s adb shell am instrument -w site.landco.pairdrop.fork.test/site.landco.pairdrop.fork.ClipboardInstrumentation | tee android/instrumentation.log
 grep -F 'CLIPBOARD_INTEGRATION_PASS: API=37' android/instrumentation.log
